@@ -1,0 +1,3 @@
+built_utc=2026-05-19T23:27:19Z
+git_sha=no-git
+features=firewall-workspace,mobile-nav,responsive-admin

@@ -1,0 +1,10 @@
+.next
+node_modules
+dist
+coverage
+.env
+.env*.local
+.local
+data/*.db
+data/*.db-*
+npm-debug.log*
