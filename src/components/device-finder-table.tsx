@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { usePingMonitor, type PingMonitorTarget } from "@/components/ping-monitor-provider";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -10,16 +11,20 @@ import {
   ResizableTh,
   resizableTdClassName
 } from "@/components/ui/resizable-table";
+import { TablePagination } from "@/components/ui/table-pagination";
 import type { ResizableColumnDef } from "@/hooks/use-resizable-table-columns";
+import { useTablePagination } from "@/hooks/use-table-pagination";
 import { deviceRowId, isPingableIpv4 } from "@/lib/ping-utils";
 
 const DEVICE_FINDER_COLUMNS: ResizableColumnDef[] = [
   { id: "select", defaultWidth: 48, minWidth: 44 },
   { id: "hostname", defaultWidth: 140, minWidth: 96 },
   { id: "interface", defaultWidth: 120, minWidth: 88 },
+  { id: "switchPort", defaultWidth: 160, minWidth: 120 },
   { id: "ip", defaultWidth: 140, minWidth: 104 },
-  { id: "mac", defaultWidth: 140, minWidth: 104 },
-  { id: "oui", defaultWidth: 96, minWidth: 72 }
+  { id: "mac", defaultWidth: 160, minWidth: 120 },
+  { id: "oui", defaultWidth: 96, minWidth: 72 },
+  { id: "ouiStatus", defaultWidth: 112, minWidth: 96 }
 ];
 
 const DEVICE_FINDER_ACTION_COLUMN: ResizableColumnDef = {
@@ -34,12 +39,15 @@ export type FinderDevice = {
   macAddress: string;
   oui: string;
   deviceName?: string;
+  switchPort?: string;
+  ouiApproved?: boolean;
 };
 
 export function DeviceFinderTable({
   devices,
   onAutofill,
-  cableTestForm
+  cableTestForm,
+  pageSize = 10
 }: {
   devices: FinderDevice[];
   onAutofill?: (device: FinderDevice) => void;
@@ -48,10 +56,20 @@ export function DeviceFinderTable({
     bulkAction: (payload: FormData) => void;
     bulkPending: boolean;
   };
+  pageSize?: number;
 }) {
   const { startPing, running } = usePingMonitor();
   const [filter, setFilter] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const showSwitchPortColumn = useMemo(
+    () => devices.some((device) => Boolean(device.switchPort || device.interfaceName.includes("/"))),
+    [devices]
+  );
+  const showOuiStatusColumn = useMemo(
+    () => devices.some((device) => device.ouiApproved !== undefined),
+    [devices]
+  );
 
   const filteredDevices = useMemo(() => {
     const query = filter.trim().toLowerCase();
@@ -59,7 +77,14 @@ export function DeviceFinderTable({
       return devices;
     }
     return devices.filter((device) => {
-      const haystack = [device.deviceName, device.interfaceName, device.ipAddress, device.macAddress, device.oui]
+      const haystack = [
+        device.deviceName,
+        device.interfaceName,
+        device.switchPort,
+        device.ipAddress,
+        device.macAddress,
+        device.oui
+      ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
@@ -67,12 +92,22 @@ export function DeviceFinderTable({
     });
   }, [devices, filter]);
 
+  const { pageItems, setPage, ...pagination } = useTablePagination(filteredDevices, pageSize, filter);
+
   const filteredIds = useMemo(() => filteredDevices.map((device) => deviceRowId(device)), [filteredDevices]);
   const hasActionColumn = Boolean(onAutofill);
-  const tableColumns = useMemo(
-    () => (hasActionColumn ? [...DEVICE_FINDER_COLUMNS, DEVICE_FINDER_ACTION_COLUMN] : DEVICE_FINDER_COLUMNS),
-    [hasActionColumn]
-  );
+  const tableColumns = useMemo(() => {
+    const columns = DEVICE_FINDER_COLUMNS.filter((column) => {
+      if (column.id === "switchPort") {
+        return showSwitchPortColumn;
+      }
+      if (column.id === "ouiStatus") {
+        return showOuiStatusColumn;
+      }
+      return true;
+    });
+    return hasActionColumn ? [...columns, DEVICE_FINDER_ACTION_COLUMN] : columns;
+  }, [hasActionColumn, showOuiStatusColumn, showSwitchPortColumn]);
   const tableId = onAutofill ? "device-finder-poe" : cableTestForm ? "device-finder-cable" : "device-finder";
 
   const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
@@ -128,6 +163,8 @@ export function DeviceFinderTable({
     });
   };
 
+  const columnIndex = (id: string) => tableColumns.findIndex((column) => column.id === id);
+
   return (
     <div className="space-y-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -162,6 +199,7 @@ export function DeviceFinderTable({
         </div>
       </div>
 
+      <TablePagination {...pagination} onPageChange={setPage} />
       <ResizableTable
         tableId={tableId}
         columns={tableColumns}
@@ -170,7 +208,7 @@ export function DeviceFinderTable({
         <ResizableTableElement>
           <thead className="bg-slate-100">
             <tr>
-              <ResizableTh columnIndex={0} className="p-2">
+              <ResizableTh columnIndex={columnIndex("select")} className="p-2">
                 <input
                   type="checkbox"
                   aria-label="Select all filtered devices"
@@ -179,24 +217,34 @@ export function DeviceFinderTable({
                   disabled={filteredDevices.length === 0}
                 />
               </ResizableTh>
-              <ResizableTh columnIndex={1} className="p-2">
+              <ResizableTh columnIndex={columnIndex("hostname")} className="p-2">
                 Hostname
               </ResizableTh>
-              <ResizableTh columnIndex={2} className="p-2">
+              <ResizableTh columnIndex={columnIndex("interface")} className="p-2">
                 Interface
               </ResizableTh>
-              <ResizableTh columnIndex={3} className="p-2">
+              {showSwitchPortColumn ? (
+                <ResizableTh columnIndex={columnIndex("switchPort")} className="p-2">
+                  Switch / port
+                </ResizableTh>
+              ) : null}
+              <ResizableTh columnIndex={columnIndex("ip")} className="p-2">
                 IP address
               </ResizableTh>
-              <ResizableTh columnIndex={4} className="p-2">
+              <ResizableTh columnIndex={columnIndex("mac")} className="p-2">
                 MAC address
               </ResizableTh>
-              <ResizableTh columnIndex={5} className="p-2">
+              <ResizableTh columnIndex={columnIndex("oui")} className="p-2">
                 OUI
               </ResizableTh>
+              {showOuiStatusColumn ? (
+                <ResizableTh columnIndex={columnIndex("ouiStatus")} className="p-2">
+                  OUI status
+                </ResizableTh>
+              ) : null}
               {hasActionColumn ? (
-                <ResizableTh columnIndex={6} className="p-2">
-                  POE reset
+                <ResizableTh columnIndex={columnIndex("action")} className="p-2">
+                  Manual reset
                 </ResizableTh>
               ) : null}
             </tr>
@@ -204,14 +252,16 @@ export function DeviceFinderTable({
           <tbody>
             {filteredDevices.length === 0 ? (
               <tr>
-                <td colSpan={hasActionColumn ? 7 : 6} className="p-4 text-center text-sm text-[var(--muted-foreground)]">
+                <td colSpan={tableColumns.length} className="p-4 text-center text-sm text-[var(--muted-foreground)]">
                   No devices match this filter.
                 </td>
               </tr>
             ) : (
-              filteredDevices.map((device) => {
+              pageItems.map((device) => {
                 const id = deviceRowId(device);
                 const pingable = isPingableIpv4(device.ipAddress);
+                const switchPort =
+                  device.switchPort || (device.interfaceName.includes("/") ? device.interfaceName : undefined);
                 return (
                   <tr key={id} className="border-t border-[var(--border)]">
                     <td className="p-2">
@@ -224,18 +274,43 @@ export function DeviceFinderTable({
                     </td>
                     <td className={resizableTdClassName("p-2")}>{device.deviceName || "—"}</td>
                     <td className={resizableTdClassName("p-2 font-mono text-xs")}>{device.interfaceName}</td>
+                    {showSwitchPortColumn ? (
+                      <td className={resizableTdClassName("p-2 font-mono text-xs")}>{switchPort || "—"}</td>
+                    ) : null}
                     <td className={resizableTdClassName("font-mono")}>
                       {device.ipAddress}
                       {!pingable ? (
                         <span className="ml-2 text-xs text-[var(--muted-foreground)]">(not pingable)</span>
                       ) : null}
                     </td>
-                    <td className={resizableTdClassName("font-mono")}>{device.macAddress}</td>
+                    <td className={resizableTdClassName("font-mono text-xs")}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>{device.macAddress}</span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => void navigator.clipboard.writeText(device.macAddress)}
+                        >
+                          Copy
+                        </Button>
+                      </div>
+                    </td>
                     <td className={resizableTdClassName("font-mono")}>{device.oui}</td>
+                    {showOuiStatusColumn ? (
+                      <td className={resizableTdClassName("p-2")}>
+                        {device.ouiApproved ? (
+                          <Badge className="bg-green-100 text-green-800 hover:bg-green-100">Approved</Badge>
+                        ) : (
+                          <Badge variant="outline">Blocked</Badge>
+                        )}
+                      </td>
+                    ) : null}
                     {onAutofill ? (
                       <td className={resizableTdClassName("p-2")}>
                         <Button type="button" size="sm" variant="outline" onClick={() => onAutofill(device)}>
-                          Autofill
+                          Use MAC
                         </Button>
                       </td>
                     ) : null}

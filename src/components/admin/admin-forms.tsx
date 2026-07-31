@@ -37,7 +37,7 @@ import { Label } from "@/components/ui/label";
 
 const ipv4Pattern =
   "(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}";
-type FirewallWithSite = Firewall & { siteNumber: string; siteName: string };
+type FirewallWithSite = Firewall;
 
 export function FirewallManager({
   sites,
@@ -80,8 +80,6 @@ export function FirewallManager({
             firewall.ipAddress,
             firewall.hostname || "",
             live?.hostname || "",
-            firewall.siteNumber,
-            firewall.siteName,
             firewall.model || "",
             live?.model || "",
             firewall.serialNumber || "",
@@ -781,7 +779,7 @@ function FirewallTable({
               </td>
               <td className={resizableTdClassName("font-mono")}>{firewall.ipAddress}</td>
               <td className={resizableTdClassName()}>
-                {firewall.siteNumber} - {firewall.siteName}
+                {firewall.name} ({firewall.ipAddress})
               </td>
               <td className={resizableTdClassName("overflow-hidden break-words whitespace-normal")}>
                 {model}
@@ -830,8 +828,8 @@ function FirewallPreview({ firewall, onEdit }: { firewall: FirewallWithSite; onE
             {firewall.name} <span className="font-mono text-sm">({firewall.ipAddress})</span>
           </p>
           <p className="text-sm text-[var(--muted-foreground)]">
-            {firewall.siteNumber} - {firewall.siteName}
-            {firewall.fmgDeviceName ? ` · FMGR: ${firewall.fmgDeviceName}` : ""}
+            {firewall.ipAddress}
+            {firewall.fmgDeviceName ? ` · FGT: ${firewall.fmgDeviceName}` : ""}
           </p>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={onEdit}>

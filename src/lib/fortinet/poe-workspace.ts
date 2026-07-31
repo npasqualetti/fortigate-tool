@@ -13,10 +13,30 @@ export type PoeResetResult = {
   command?: string;
 };
 
+export type PoeLearnedDevice = {
+  interfaceName: string;
+  ipAddress: string;
+  macAddress: string;
+  deviceName?: string;
+  oui: string;
+  ouiApproved: boolean;
+  switchPort?: string;
+};
+
+export type PoeLearnedDeviceDiagnostic = {
+  path: string;
+  records: number;
+  devices: number;
+  error?: string;
+  note?: string;
+};
+
 export type PoeWorkspaceState = {
   error?: string;
   message?: string;
   ports?: PoePortRow[];
+  learnedDevices?: PoeLearnedDevice[];
+  learnedDiagnostics?: PoeLearnedDeviceDiagnostic[];
   allowedOuis?: string[];
   connectionLabel?: string;
   firewallName?: string;

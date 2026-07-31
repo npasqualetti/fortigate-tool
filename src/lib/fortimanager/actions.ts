@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth/session";
 import {
   deleteFortiManagerSyncSession,
-  ensureUnassignedSite,
+  ensureDefaultFirewallSite,
   getFortiManagerSyncSessionRow,
   saveFortiManagerSyncSession,
   upsertFirewallFromDiscovery,
@@ -44,6 +44,22 @@ export async function getFortiManagerAdminState() {
     settings: getPublicFortiManagerSettings(),
     envDefaults: readFortiManagerSettingsFromEnvFile()
   };
+}
+
+export async function testAndSaveFortiManagerConnection(input: {
+  host: string;
+  apiKey: string;
+  verifyTls: boolean;
+  adom: string;
+}): Promise<FortiManagerActionState> {
+  const formData = new FormData();
+  formData.set("host", input.host);
+  formData.set("apiKey", input.apiKey);
+  formData.set("adom", input.adom);
+  if (input.verifyTls) {
+    formData.set("verifyTls", "on");
+  }
+  return testFortiManagerAction(undefined, formData);
 }
 
 export async function testFortiManagerAction(
@@ -117,11 +133,47 @@ export async function testFortiManagerAction(
       status: "success",
       details: `FortiManager connection OK. Found ${devices.length} managed FortiGate device(s). ${proxyMessage}`
     });
+
+    try {
+      saveFortiManagerSettings({
+        host,
+        apiKey: apiKey || null,
+        verifyTls,
+        adom
+      });
+      resetFortiManagerClientCache();
+      writeAudit({
+        username: user.username,
+        action: "admin.fortimanager.save",
+        targetType: "fortimanager",
+        targetId: host,
+        status: "success",
+        details: `Saved FortiManager connection settings for ${host} after successful test.`
+      });
+    } catch (saveError) {
+      const saveMessage = saveError instanceof Error ? saveError.message : "Unable to save FortiManager settings.";
+      writeAudit({
+        username: user.username,
+        action: "admin.fortimanager.save",
+        targetType: "fortimanager",
+        targetId: host,
+        status: "error",
+        details: saveMessage
+      });
+      return {
+        error: `Connection test passed but settings could not be saved: ${saveMessage}`
+      };
+    }
+
+    const deviceSummary =
+      devices.length > 0
+        ? `Found ${devices.length} managed FortiGate device(s).`
+        : "No managed FortiGate devices were returned.";
+    const proxySummary = proxyMessage ? ` ${proxyMessage}` : "";
+
     return {
-      message:
-        devices.length > 0
-          ? `FortiManager connection OK. Found ${devices.length} managed FortiGate device(s). ${proxyMessage}`
-          : `FortiManager connection OK. Found ${devices.length} managed FortiGate device(s).`
+      message: `Connection successful — settings saved. ${deviceSummary}${proxySummary}`.trim(),
+      discoveredCount: devices.length
     };
   } catch (error) {
     writeAudit({
@@ -290,11 +342,11 @@ export async function processFortiManagerSyncBatchAction(
   const { session } = loaded;
   const batchSize = getFortiManagerSyncBatchSize();
   const slice = getSyncBatchSlice(session.devices, offset, batchSize);
-  const unassignedSite = ensureUnassignedSite();
+  const defaultSite = ensureDefaultFirewallSite();
 
   try {
     for (const device of slice.batch) {
-      upsertDiscoveredDevice(device, unassignedSite.id, {
+      upsertDiscoveredDevice(device, defaultSite.id, {
         verifyTls: session.verifyTls,
         adom: session.defaultAdom
       });
@@ -375,10 +427,10 @@ export async function syncFortiManagerDevicesAction(
   }
 
   let offset = 0;
-  let last: FortiManagerActionState = begin;
-  while (!last?.complete) {
-    last = await processFortiManagerSyncBatchAction(begin.syncId, offset);
-    if (last?.error) {
+  let last: NonNullable<FortiManagerActionState> = begin;
+  while (!last.complete) {
+    last = (await processFortiManagerSyncBatchAction(begin.syncId, offset)) ?? last;
+    if (last.error) {
       return last;
     }
     if (last.complete) {

@@ -33,7 +33,7 @@ export function FirewallWorkspace({
   firewall,
   initialSnapshot
 }: {
-  firewall: PublicFirewallRecord & { siteNumber: string; siteName: string };
+  firewall: PublicFirewallRecord;
   initialSnapshot: FirewallWorkspaceSnapshot;
 }) {
   const [snapshot, setSnapshot] = useState(initialSnapshot);
@@ -70,7 +70,8 @@ export function FirewallWorkspace({
           <div>
             <h1 className="text-3xl font-bold tracking-tight">{firewall.hostname || firewall.name}</h1>
             <p className="text-[var(--muted-foreground)]">
-              {firewall.siteNumber} · {firewall.siteName} · {firewall.ipAddress}
+              {firewall.name} · {firewall.ipAddress}
+              {firewall.fmgDeviceName ? ` · ${firewall.fmgDeviceName}` : ""}
             </p>
           </div>
           <form action={refreshAction}>

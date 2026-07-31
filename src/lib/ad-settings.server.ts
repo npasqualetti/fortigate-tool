@@ -16,7 +16,8 @@ const AD_ENV_KEYS = [
   "AD_BASE_DN",
   "AD_DOMAIN",
   "AD_USERNAME_ATTRIBUTE",
-  "AD_GROUP_ATTRIBUTE"
+  "AD_GROUP_ATTRIBUTE",
+  "AD_VERIFY_TLS"
 ] as const;
 
 const DEFAULTS: AdSettings = {
@@ -24,8 +25,16 @@ const DEFAULTS: AdSettings = {
   adBaseDn: "",
   adDomain: "",
   adUsernameAttribute: "sAMAccountName",
-  adGroupAttribute: "memberOf"
+  adGroupAttribute: "memberOf",
+  adVerifyTls: true
 };
+
+function parseVerifyTlsEnv(value: string | undefined, fallback = true) {
+  if (value === undefined || value === "") {
+    return fallback;
+  }
+  return value !== "false" && value !== "0" && value.toLowerCase() !== "no";
+}
 
 function envFilePath() {
   return path.join(process.cwd(), ".env");
@@ -68,7 +77,8 @@ export function readAdSettingsFromEnvFile(): AdSettings {
     adBaseDn: fromFile.AD_BASE_DN || process.env.AD_BASE_DN || "",
     adDomain: fromFile.AD_DOMAIN || process.env.AD_DOMAIN || "",
     adUsernameAttribute: fromFile.AD_USERNAME_ATTRIBUTE || process.env.AD_USERNAME_ATTRIBUTE || DEFAULTS.adUsernameAttribute,
-    adGroupAttribute: fromFile.AD_GROUP_ATTRIBUTE || process.env.AD_GROUP_ATTRIBUTE || DEFAULTS.adGroupAttribute
+    adGroupAttribute: fromFile.AD_GROUP_ATTRIBUTE || process.env.AD_GROUP_ATTRIBUTE || DEFAULTS.adGroupAttribute,
+    adVerifyTls: parseVerifyTlsEnv(fromFile.AD_VERIFY_TLS ?? process.env.AD_VERIFY_TLS, DEFAULTS.adVerifyTls)
   };
 }
 
@@ -118,6 +128,7 @@ export function applyAdSettingsToProcessEnv(settings: AdSettings) {
   process.env.AD_DOMAIN = settings.adDomain;
   process.env.AD_USERNAME_ATTRIBUTE = settings.adUsernameAttribute;
   process.env.AD_GROUP_ATTRIBUTE = settings.adGroupAttribute;
+  process.env.AD_VERIFY_TLS = settings.adVerifyTls ? "true" : "false";
 }
 
 export function writeAdSettingsToEnvFile(settings: AdSettings) {
@@ -127,7 +138,8 @@ export function writeAdSettingsToEnvFile(settings: AdSettings) {
     AD_BASE_DN: settings.adBaseDn,
     AD_DOMAIN: settings.adDomain,
     AD_USERNAME_ATTRIBUTE: settings.adUsernameAttribute,
-    AD_GROUP_ATTRIBUTE: settings.adGroupAttribute
+    AD_GROUP_ATTRIBUTE: settings.adGroupAttribute,
+    AD_VERIFY_TLS: settings.adVerifyTls ? "true" : "false"
   };
 
   const existingLines = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8").split(/\r?\n/) : [];

@@ -15,35 +15,68 @@ if exist BUILD_INFO.txt (
   echo.
 )
 
+set FAIL=0
+
+if not exist runtime\node.exe (
+  echo [FAIL] runtime\node.exe missing
+  set FAIL=1
+) else (
+  echo [OK] Bundled Node runtime present
+)
+
 if not exist server.js (
-  echo [FAIL] server.js not found in this folder.
-  exit /b 1
+  echo [FAIL] server.js not found
+  set FAIL=1
+) else (
+  echo [OK] Standalone server present
 )
 
 if not exist .next\static\chunks (
-  echo [FAIL] .next\static\chunks missing — static assets were not deployed.
-  exit /b 1
+  echo [FAIL] .next\static\chunks missing
+  set FAIL=1
+) else (
+  echo [OK] Static assets present
 )
 
-findstr /m /c:"Find hosts" .next\static\chunks\*.js >nul 2>&1
-if errorlevel 1 (
-  echo [FAIL] New firewall workspace UI not found in static bundles.
-  echo        You likely have an old build or an incomplete copy of .next\static
-  exit /b 1
+if not exist node_modules\better-sqlite3\build\Release\better_sqlite3.node (
+  echo [FAIL] Windows better-sqlite3 native module missing
+  set FAIL=1
 ) else (
-  echo [OK] Firewall workspace UI present in static bundles.
+  echo [OK] better-sqlite3 Windows binary present
 )
 
-findstr /m /c:"refreshFirewallWorkspaceAction" .next\server\chunks\ssr\*.js >nul 2>&1
+findstr /m /c:"FortiManager connection" .next\static\chunks\*.js >nul 2>&1
 if errorlevel 1 (
-  echo [WARN] Server bundle marker not found; server files may be stale.
+  echo [WARN] FortiManager admin UI marker not found in client bundles
 ) else (
-  echo [OK] Firewall workspace server actions present.
+  echo [OK] FortiManager admin UI present
+)
+
+findstr /m /c:"DHCP / ARP devices" .next\static\chunks\*.js >nul 2>&1
+if errorlevel 1 (
+  echo [WARN] POE reset workspace marker not found in client bundles
+) else (
+  echo [OK] POE reset workspace UI present
+)
+
+findstr /m /c:"Verify TLS certificate for LDAPS" .next\static\chunks\*.js >nul 2>&1
+if errorlevel 1 (
+  echo [WARN] AD TLS settings UI marker not found
+) else (
+  echo [OK] AD LDAPS TLS option present
+)
+
+if not exist .env (
+  echo [WARN] .env missing — run setup-first-run.bat before start.bat
+) else (
+  echo [OK] .env present
 )
 
 echo.
-echo If the browser still shows the old UI:
-echo   1. Stop every running copy (Task Manager: node.exe, or end scheduled task).
-echo   2. Start from THIS folder using start.bat.
-echo   3. Hard refresh the browser (Ctrl+F5).
+if %FAIL%==1 (
+  echo Deploy check FAILED. Re-extract the full zip package.
+  exit /b 1
+)
+
+echo Deploy check passed. Run start.bat, then open http://localhost:3000/login
 exit /b 0

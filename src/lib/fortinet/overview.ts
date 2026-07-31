@@ -10,8 +10,6 @@ export type FirewallRecord = ReturnType<typeof listFirewalls>[number];
 
 export type PublicFirewallRecord = {
   id: number;
-  siteNumber: string;
-  siteName: string;
   name: string;
   ipAddress: string;
   hostname: string | null;
@@ -40,8 +38,6 @@ export type FirewallOverview = {
 export function toPublicFirewall(firewall: FirewallRecord): PublicFirewallRecord {
   return {
     id: firewall.id,
-    siteNumber: firewall.siteNumber,
-    siteName: firewall.siteName,
     name: firewall.name,
     ipAddress: firewall.ipAddress,
     hostname: firewall.hostname,

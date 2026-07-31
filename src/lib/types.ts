@@ -75,6 +75,7 @@ export type LocalUser = {
   username: string;
   displayName: string;
   passwordHash: string;
+  role: AppRole;
   mustChangePassword: boolean;
   disabled: boolean;
 };

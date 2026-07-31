@@ -4,6 +4,7 @@ export type AdSettings = {
   adDomain: string;
   adUsernameAttribute: string;
   adGroupAttribute: string;
+  adVerifyTls: boolean;
 };
 
 export type AdSettingsDetection = {
@@ -21,12 +22,14 @@ export function dnsDomainToBaseDn(dnsDomain: string) {
 }
 
 export function parseAdSettingsForm(formData: FormData): AdSettings {
+  const verifyField = formData.get("adVerifyTls");
   return {
     adUrl: String(formData.get("adUrl") || "").trim(),
     adBaseDn: String(formData.get("adBaseDn") || "").trim(),
     adDomain: String(formData.get("adDomain") || "").trim().toUpperCase(),
     adUsernameAttribute: String(formData.get("adUsernameAttribute") || "sAMAccountName").trim() || "sAMAccountName",
-    adGroupAttribute: String(formData.get("adGroupAttribute") || "memberOf").trim() || "memberOf"
+    adGroupAttribute: String(formData.get("adGroupAttribute") || "memberOf").trim() || "memberOf",
+    adVerifyTls: verifyField === "on" || verifyField === "true" || verifyField === "1"
   };
 }
 

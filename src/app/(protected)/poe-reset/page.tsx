@@ -3,10 +3,12 @@ import { requireRole } from "@/lib/auth/session";
 import { listAllowedOuis, listFirewalls } from "@/lib/db";
 
 export default async function PoeResetPage() {
-  const user = await requireRole(["network_admin", "telecom", "fuel"]);
+  const user = await requireRole(["network_admin", "help_desk", "telecom", "fuel"]);
   const firewalls = listFirewalls();
+  const canChooseOuiPolicy =
+    user.roles.includes("network_admin") || user.roles.includes("help_desk");
   const teamRole = user.roles.includes("telecom") ? "telecom" : user.roles.includes("fuel") ? "fuel" : "telecom";
-  const allowedOuis = listAllowedOuis(user.roles.includes("network_admin") ? undefined : teamRole);
+  const allowedOuis = listAllowedOuis(canChooseOuiPolicy ? undefined : teamRole);
 
   return (
     <div className="space-y-6">

@@ -20,7 +20,6 @@ const refreshMs = 60_000;
 
 const FIREWALL_OVERVIEW_COLUMNS: ResizableColumnDef[] = [
   { id: "status", defaultWidth: 132, minWidth: 96 },
-  { id: "site", defaultWidth: 120, minWidth: 88 },
   { id: "firewall", defaultWidth: 148, minWidth: 96 },
   { id: "ip", defaultWidth: 112, minWidth: 96 },
   { id: "hostname", defaultWidth: 136, minWidth: 96 },
@@ -52,9 +51,8 @@ export function FirewallOverviewTable({ firewalls }: { firewalls: PublicFirewall
 
     return firewalls.filter((firewall) =>
       [
-        firewall.siteNumber,
-        firewall.siteName,
         firewall.name,
+        firewall.fmgDeviceName || "",
         firewall.ipAddress,
         firewall.model || "",
         firewall.serialNumber || "",
@@ -162,42 +160,39 @@ export function FirewallOverviewTable({ firewalls }: { firewalls: PublicFirewall
                   Status
                 </ResizableTh>
                 <ResizableTh columnIndex={1} className="p-2">
-                  Site
-                </ResizableTh>
-                <ResizableTh columnIndex={2} className="p-2">
                   Firewall
                 </ResizableTh>
-                <ResizableTh columnIndex={3} className="p-2">
+                <ResizableTh columnIndex={2} className="p-2">
                   Mgmt IP
                 </ResizableTh>
-                <ResizableTh columnIndex={4} className="p-2">
+                <ResizableTh columnIndex={3} className="p-2">
                   Hostname
                 </ResizableTh>
-                <ResizableTh columnIndex={5} className="p-2">
+                <ResizableTh columnIndex={4} className="p-2">
                   Platform
                 </ResizableTh>
-                <ResizableTh columnIndex={6} className="p-2">
+                <ResizableTh columnIndex={5} className="p-2">
                   FortiOS
                 </ResizableTh>
-                <ResizableTh columnIndex={7} className="p-2">
+                <ResizableTh columnIndex={6} className="p-2">
                   Serial
                 </ResizableTh>
-                <ResizableTh columnIndex={8} className="p-2">
+                <ResizableTh columnIndex={7} className="p-2">
                   Uptime
                 </ResizableTh>
-                <ResizableTh columnIndex={9} className="p-2">
+                <ResizableTh columnIndex={8} className="p-2">
                   CPU
                 </ResizableTh>
-                <ResizableTh columnIndex={10} className="p-2">
+                <ResizableTh columnIndex={9} className="p-2">
                   Memory
                 </ResizableTh>
-                <ResizableTh columnIndex={11} className="p-2">
+                <ResizableTh columnIndex={10} className="p-2">
                   TLS
                 </ResizableTh>
-                <ResizableTh columnIndex={12} className="p-2">
+                <ResizableTh columnIndex={11} className="p-2">
                   Connection
                 </ResizableTh>
-                <ResizableTh columnIndex={13} className="p-2">
+                <ResizableTh columnIndex={12} className="p-2">
                   Updated
                 </ResizableTh>
               </tr>
@@ -226,12 +221,11 @@ export function FirewallOverviewTable({ firewalls }: { firewalls: PublicFirewall
                     {row?.error ? <p className="mt-1 text-xs text-red-700">{row.error}</p> : null}
                     {isLoading ? <p className="mt-1 text-xs text-[var(--muted-foreground)]">Refreshing...</p> : null}
                   </td>
-                  <td className={resizableTdClassName("p-2")}>
-                    <p className="font-mono">{firewall.siteNumber}</p>
-                    <p className="text-xs text-[var(--muted-foreground)]">{firewall.siteName}</p>
-                  </td>
                   <td className={resizableTdClassName("p-2 font-semibold")}>
                     {hostname || (isLoading ? "…" : firewall.name)}
+                    {firewall.fmgDeviceName && firewall.fmgDeviceName !== firewall.name ? (
+                      <p className="text-xs font-normal text-[var(--muted-foreground)]">{firewall.fmgDeviceName}</p>
+                    ) : null}
                   </td>
                   <td className={resizableTdClassName("p-2 font-mono")}>{firewall.ipAddress}</td>
                   <td className={resizableTdClassName("p-2")}>

@@ -81,6 +81,21 @@ export function AdSettingsTester({ initialSettings }: { initialSettings: AdSetti
         />
       </div>
 
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={settings.adVerifyTls}
+          onChange={(event) => updateField("adVerifyTls", event.target.checked)}
+        />
+        Verify TLS certificate for LDAPS connections
+      </label>
+      {!settings.adVerifyTls ? (
+        <p className="text-xs text-amber-800">
+          TLS verification is off. Use this only when your domain controller presents an internal or self-signed
+          certificate that Node.js does not trust.
+        </p>
+      ) : null}
+
       <div className="rounded-md border border-[var(--border)] bg-slate-50 p-3">
         <p className="mb-3 text-sm font-medium">Test LDAP sign-in</p>
         <form action={testAction} className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
@@ -155,6 +170,7 @@ function AdSettingsFields({ settings }: { settings: AdSettings }) {
       <input type="hidden" name="adDomain" value={settings.adDomain} />
       <input type="hidden" name="adUsernameAttribute" value={settings.adUsernameAttribute} />
       <input type="hidden" name="adGroupAttribute" value={settings.adGroupAttribute} />
+      <input type="hidden" name="adVerifyTls" value={settings.adVerifyTls ? "true" : "false"} />
     </>
   );
 }

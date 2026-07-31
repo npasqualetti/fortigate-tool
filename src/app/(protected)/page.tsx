@@ -6,7 +6,10 @@ export default async function DashboardPage() {
   const user = await requireUser();
   const roleLabels = user.roles.map((role) => ROLE_LABELS[role]);
   const canReset =
-    user.roles.includes("telecom") || user.roles.includes("fuel") || user.roles.includes("network_admin");
+    user.roles.includes("telecom") ||
+    user.roles.includes("fuel") ||
+    user.roles.includes("network_admin") ||
+    user.roles.includes("help_desk");
   const canAdmin = user.roles.includes("network_admin");
   const canViewFirewalls =
     user.roles.includes("help_desk") ||
@@ -55,7 +58,7 @@ export default async function DashboardPage() {
               — reset switch ports when the connected device&apos;s MAC OUI is on your team&apos;s approved list.
             </li>
           ) : (
-            <li>POE reset is limited to Telecom, Fuel, and Network Admin roles.</li>
+            <li>POE reset is limited to Help Desk, Telecom, Fuel, and Network Admin roles.</li>
           )}
           {canAdmin ? (
             <li>
@@ -90,7 +93,7 @@ export default async function DashboardPage() {
           <li>
             <span className="font-medium text-foreground">OUI checks on sensitive actions.</span> POE reset is allowed
             only when the port&apos;s learned or entered MAC matches an OUI on the Telecom or Fuel allow list. Network
-            Admins can run resets under either team policy.
+            Admins and Help Desk can run resets under either team policy.
           </li>
           <li>
             <span className="font-medium text-foreground">Audit trail.</span> Logins, denials, resets, and admin changes

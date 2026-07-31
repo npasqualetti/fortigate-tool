@@ -12,8 +12,6 @@ let db: Database.Database | null = null;
 
 type DbFirewallRow = Omit<Firewall, "verifyTls"> & {
   verifyTls: number;
-  siteNumber: string;
-  siteName: string;
 };
 
 function connection() {
@@ -128,6 +126,15 @@ function migrate(database: Database.Database) {
     "CREATE UNIQUE INDEX IF NOT EXISTS firewalls_fmg_device_name_unique ON firewalls(fmg_device_name) WHERE fmg_device_name IS NOT NULL"
   );
 
+  const localUserColumns = database.prepare("PRAGMA table_info(local_users)").all() as Array<{ name: string }>;
+  if (!localUserColumns.some((column) => column.name === "role")) {
+    database.exec(`
+      ALTER TABLE local_users
+      ADD COLUMN role TEXT NOT NULL DEFAULT 'network_admin'
+      CHECK (role IN ('network_admin', 'telecom', 'fuel', 'help_desk'));
+    `);
+  }
+
   database.exec(`
     CREATE TABLE IF NOT EXISTS fortimanager_sync_sessions (
       id TEXT PRIMARY KEY,
@@ -153,30 +160,79 @@ function seedDefaults(database: Database.Database) {
     }
   }
 
-  const localUserCount = database.prepare("SELECT COUNT(*) as count FROM local_users").get() as { count: number };
-  if (localUserCount.count === 0) {
-    database
-      .prepare(
-        `INSERT INTO local_users (username, display_name, password_hash, must_change_password)
-         VALUES (@username, @displayName, @passwordHash, 1)`
-      )
-      .run({
-        username: process.env.BOOTSTRAP_ADMIN_USERNAME || "admin",
-        displayName: "Bootstrap Admin",
-        passwordHash: hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD || "ChangeMe123!")
-      });
+  seedLocalUsers(database);
+}
+
+function seedLocalUsers(database: Database.Database) {
+  const defaultPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD || "ChangeMe123!";
+  const insert = database.prepare(
+    `INSERT INTO local_users (username, display_name, password_hash, must_change_password, role)
+     VALUES (@username, @displayName, @passwordHash, @mustChangePassword, @role)`
+  );
+  const exists = database.prepare("SELECT id FROM local_users WHERE lower(username) = lower(?)");
+
+  const users: Array<{
+    username: string;
+    displayName: string;
+    role: AppRole;
+    mustChangePassword: number;
+    password: string;
+  }> = [
+    {
+      username: process.env.BOOTSTRAP_ADMIN_USERNAME || "admin",
+      displayName: "Bootstrap Admin",
+      role: "network_admin",
+      mustChangePassword: 1,
+      password: defaultPassword
+    },
+    {
+      username: "helpdesk",
+      displayName: "Help Desk Test User",
+      role: "help_desk",
+      mustChangePassword: 0,
+      password: defaultPassword
+    },
+    {
+      username: "telecom",
+      displayName: "Telecom Test User",
+      role: "telecom",
+      mustChangePassword: 0,
+      password: defaultPassword
+    },
+    {
+      username: "fuel",
+      displayName: "Fuel Test User",
+      role: "fuel",
+      mustChangePassword: 0,
+      password: defaultPassword
+    }
+  ];
+
+  for (const user of users) {
+    if (exists.get(user.username)) {
+      continue;
+    }
+    insert.run({
+      username: user.username,
+      displayName: user.displayName,
+      passwordHash: hashPassword(user.password),
+      mustChangePassword: user.mustChangePassword,
+      role: user.role
+    });
   }
 }
 
 export function getLocalUserByUsername(username: string): LocalUser | null {
   const row = connection()
     .prepare(
-      `SELECT id, username, display_name as displayName, password_hash as passwordHash,
+      `SELECT id, username, display_name as displayName, password_hash as passwordHash, role,
         must_change_password as mustChangePassword, disabled
        FROM local_users
        WHERE lower(username) = lower(?)`
     )
-    .get(username) as (Omit<LocalUser, "mustChangePassword" | "disabled"> & { mustChangePassword: number; disabled: number }) | undefined;
+    .get(username) as
+    | (Omit<LocalUser, "mustChangePassword" | "disabled"> & { mustChangePassword: number; disabled: number })
+    | undefined;
 
   return row
     ? {
@@ -353,29 +409,25 @@ export function updateSiteTextField(
     .run(value, id);
 }
 
-export function listFirewalls(): Array<Firewall & { siteNumber: string; siteName: string }> {
+export function listFirewalls(): Firewall[] {
   const rows = connection()
     .prepare(
       `SELECT f.id, f.site_id as siteId, f.name, f.ip_address as ipAddress, f.hostname, f.model, f.serial_number as serialNumber,
-        f.fmg_device_name as fmgDeviceName, f.adom, f.vdom, f.api_token_encrypted as apiTokenEncrypted, f.verify_tls as verifyTls,
-        s.site_number as siteNumber, s.name as siteName
+        f.fmg_device_name as fmgDeviceName, f.adom, f.vdom, f.api_token_encrypted as apiTokenEncrypted, f.verify_tls as verifyTls
        FROM firewalls f
-       INNER JOIN sites s ON s.id = f.site_id
-       ORDER BY s.site_number, f.name`
+       ORDER BY f.name`
     )
     .all() as DbFirewallRow[];
 
   return rows.map((row) => ({ ...row, verifyTls: Boolean(row.verifyTls) }));
 }
 
-export function getFirewall(id: number): (Firewall & { siteNumber: string; siteName: string }) | null {
+export function getFirewall(id: number): Firewall | null {
   const row = connection()
     .prepare(
       `SELECT f.id, f.site_id as siteId, f.name, f.ip_address as ipAddress, f.hostname, f.model, f.serial_number as serialNumber,
-        f.fmg_device_name as fmgDeviceName, f.adom, f.vdom, f.api_token_encrypted as apiTokenEncrypted, f.verify_tls as verifyTls,
-        s.site_number as siteNumber, s.name as siteName
+        f.fmg_device_name as fmgDeviceName, f.adom, f.vdom, f.api_token_encrypted as apiTokenEncrypted, f.verify_tls as verifyTls
        FROM firewalls f
-       INNER JOIN sites s ON s.id = f.site_id
        WHERE f.id = ?`
     )
     .get(id) as DbFirewallRow | undefined;
@@ -386,10 +438,8 @@ export function getFirewallByFmgDeviceName(fmgDeviceName: string) {
   const row = connection()
     .prepare(
       `SELECT f.id, f.site_id as siteId, f.name, f.ip_address as ipAddress, f.hostname, f.model, f.serial_number as serialNumber,
-        f.fmg_device_name as fmgDeviceName, f.adom, f.vdom, f.api_token_encrypted as apiTokenEncrypted, f.verify_tls as verifyTls,
-        s.site_number as siteNumber, s.name as siteName
+        f.fmg_device_name as fmgDeviceName, f.adom, f.vdom, f.api_token_encrypted as apiTokenEncrypted, f.verify_tls as verifyTls
        FROM firewalls f
-       INNER JOIN sites s ON s.id = f.site_id
        WHERE f.fmg_device_name = ?`
     )
     .get(fmgDeviceName) as DbFirewallRow | undefined;
@@ -400,10 +450,8 @@ export function getFirewallBySerial(serialNumber: string) {
   const row = connection()
     .prepare(
       `SELECT f.id, f.site_id as siteId, f.name, f.ip_address as ipAddress, f.hostname, f.model, f.serial_number as serialNumber,
-        f.fmg_device_name as fmgDeviceName, f.adom, f.vdom, f.api_token_encrypted as apiTokenEncrypted, f.verify_tls as verifyTls,
-        s.site_number as siteNumber, s.name as siteName
+        f.fmg_device_name as fmgDeviceName, f.adom, f.vdom, f.api_token_encrypted as apiTokenEncrypted, f.verify_tls as verifyTls
        FROM firewalls f
-       INNER JOIN sites s ON s.id = f.site_id
        WHERE f.serial_number = ?`
     )
     .get(serialNumber) as DbFirewallRow | undefined;
@@ -452,22 +500,34 @@ export function upsertFirewall(input: Omit<Firewall, "id"> & { id?: number }) {
     .run({ ...input, verifyTls: input.verifyTls ? 1 : 0 });
 }
 
-export function ensureUnassignedSite() {
-  const existing = siteByNumber("0000");
+/** Internal placeholder site required by the firewalls.site_id foreign key. Not shown in the UI. */
+export function ensureDefaultFirewallSite() {
+  const legacy = siteByNumber("0000");
+  if (legacy) {
+    return legacy;
+  }
+
+  const existing = siteByNumber("__managed__");
   if (existing) {
     return existing;
   }
+
   upsertSite({
-    siteNumber: "0000",
-    name: "Unassigned FortiManager Devices",
-    address1: "Not assigned",
+    siteNumber: "__managed__",
+    name: "Managed FortiGates",
+    address1: "Internal",
     address2: null,
-    city: "Not assigned",
+    city: "Internal",
     state: "NA",
     postalCode: "00000",
-    notes: "Auto-created for FortiManager discovered devices until mapped to a real site."
+    notes: "Auto-created holder for FortiManager-synced firewalls."
   });
-  return siteByNumber("0000")!;
+  return siteByNumber("__managed__")!;
+}
+
+/** @deprecated Use ensureDefaultFirewallSite */
+export function ensureUnassignedSite() {
+  return ensureDefaultFirewallSite();
 }
 
 export function upsertFirewallFromDiscovery(input: {

@@ -29,8 +29,8 @@ export async function loginAction(_: { error?: string } | undefined, formData: F
       await createSession({
         username: localUser.username,
         displayName: localUser.displayName,
-        groups: ["local-admin"],
-        roles: ["network_admin"],
+        groups: [`local-${localUser.role}`],
+        roles: [localUser.role],
         authProvider: "local",
         mustChangePassword: localUser.mustChangePassword
       });
@@ -41,8 +41,8 @@ export async function loginAction(_: { error?: string } | undefined, formData: F
         targetId: null,
         status: "success",
         details: localUser.mustChangePassword
-          ? "Bootstrap admin logged in and must change password."
-          : "Local admin logged in."
+          ? "Local user logged in and must change password."
+          : `Local test user logged in with role ${localUser.role}.`
       });
       redirectTo = localUser.mustChangePassword ? "/change-password" : "/";
     } else {

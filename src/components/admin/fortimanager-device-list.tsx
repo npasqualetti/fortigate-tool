@@ -14,7 +14,7 @@ import {
 import type { ResizableColumnDef } from "@/hooks/use-resizable-table-columns";
 import { useTablePagination } from "@/hooks/use-table-pagination";
 
-type SyncedDevice = Firewall & { siteNumber: string; siteName: string };
+type SyncedDevice = Firewall;
 
 const DEVICE_COLUMNS: ResizableColumnDef[] = [
   { id: "fmg", defaultWidth: 140, minWidth: 104 },
@@ -106,7 +106,7 @@ export function FortiManagerDeviceList({
             <thead className="bg-slate-100">
               <tr>
                 <ResizableTh columnIndex={0} className="p-2">
-                  FMGR name
+                  FGT
                 </ResizableTh>
                 <ResizableTh columnIndex={1} className="p-2">
                   Hostname

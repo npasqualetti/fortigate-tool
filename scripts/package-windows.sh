@@ -59,6 +59,7 @@ mkdir -p "$PACKAGE_DIR/.next/static" "$PACKAGE_DIR/runtime"
 cp -a "$ROOT/.next/static/." "$PACKAGE_DIR/.next/static/"
 
 cp "$ROOT/deploy/windows/start.bat" "$PACKAGE_DIR/start.bat"
+cp "$ROOT/deploy/windows/setup-first-run.bat" "$PACKAGE_DIR/setup-first-run.bat"
 cp "$ROOT/deploy/windows/install-startup-task.bat" "$PACKAGE_DIR/install-startup-task.bat"
 cp "$ROOT/deploy/windows/verify-deploy.bat" "$PACKAGE_DIR/verify-deploy.bat"
 cp "$ROOT/deploy/windows/README-FIRST-RUN.txt" "$PACKAGE_DIR/README-FIRST-RUN.txt"
@@ -67,7 +68,8 @@ rm -f "$PACKAGE_DIR/.env"
 cat > "$PACKAGE_DIR/BUILD_INFO.txt" <<EOF
 built_utc=$BUILD_STAMP
 git_sha=$GIT_SHA
-features=firewall-workspace,mobile-nav,responsive-admin
+features=fortimanager-sync,poe-reset-workspace,dhcp-arp-devices,ad-ldaps-tls-toggle,local-test-users,helpdesk-oui-policy
+node=22.22.3-win-x64
 EOF
 
 rm -rf "$PACKAGE_DIR/data"

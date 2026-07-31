@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useActionState } from "react";
 import { loadPoeWorkspaceAction, poeResetAction } from "@/lib/fortinet/actions";
 import type { PoePortRow } from "@/lib/fortinet/poe-workspace";
@@ -20,6 +20,7 @@ import type { ResizableColumnDef } from "@/hooks/use-resizable-table-columns";
 import { useTablePagination } from "@/hooks/use-table-pagination";
 import { TablePagination } from "@/components/ui/table-pagination";
 import { useActionStateToast } from "@/hooks/use-action-state-toast";
+import { DeviceFinderTable, type FinderDevice } from "@/components/device-finder-table";
 
 const PORT_TABLE_COLUMNS: ResizableColumnDef[] = [
   { id: "switch", defaultWidth: 160, minWidth: 120 },
@@ -36,18 +37,31 @@ export function PoeResetWorkspace({
   firewalls
 }: {
   user: SessionUser;
-  firewalls: Array<Firewall & { siteNumber: string; siteName: string }>;
+  firewalls: Firewall[];
 }) {
   const [workspaceState, loadWorkspaceAction, workspacePending] = useActionState(loadPoeWorkspaceAction, undefined);
   const [resetState, resetAction, resetPending] = useActionState(poeResetAction, undefined);
   const [firewallId, setFirewallId] = useState(() => String(firewalls[0]?.id ?? ""));
-  const [firewallSearch, setFirewallSearch] = useState("");
   const [filter, setFilter] = useState("");
   const [approvedOnly, setApprovedOnly] = useState(false);
   const [manualPort, setManualPort] = useState("");
   const [manualMac, setManualMac] = useState("");
-  const [teamRole, setTeamRole] = useState<"telecom" | "fuel">("telecom");
-  const isAdmin = user.roles.includes("network_admin");
+  const canChooseOuiPolicy =
+    user.roles.includes("network_admin") || user.roles.includes("help_desk");
+  const isTelecom = user.roles.includes("telecom");
+  const isFuel = user.roles.includes("fuel");
+  const [teamRole, setTeamRole] = useState<"telecom" | "fuel">(() => {
+    if (canChooseOuiPolicy) {
+      return "telecom";
+    }
+    if (isTelecom) {
+      return "telecom";
+    }
+    if (isFuel) {
+      return "fuel";
+    }
+    return "telecom";
+  });
 
   useActionStateToast(workspaceState, workspacePending);
   useActionStateToast(resetState, resetPending);
@@ -72,97 +86,65 @@ export function PoeResetWorkspace({
 
   const readyFirewalls = firewalls.filter((firewall) => Boolean(firewall.fmgDeviceName || firewall.apiTokenEncrypted));
 
-  const filteredReadyFirewalls = useMemo(() => {
-    const query = firewallSearch.trim().toLowerCase();
-    if (!query) {
-      return readyFirewalls;
-    }
-    return readyFirewalls.filter((firewall) =>
-      [firewall.siteNumber, firewall.siteName, firewall.name, firewall.ipAddress, firewall.fmgDeviceName, firewall.hostname]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(query)
-    );
-  }, [readyFirewalls, firewallSearch]);
-
-  const firewallSelectOptions = useMemo(() => {
-    const selected = readyFirewalls.find((firewall) => String(firewall.id) === firewallId);
-    const pool = firewallSearch.trim() ? filteredReadyFirewalls : filteredReadyFirewalls.slice(0, 10);
-    if (selected && !pool.some((firewall) => firewall.id === selected.id)) {
-      return [selected, ...pool];
-    }
-    return pool;
-  }, [filteredReadyFirewalls, firewallId, firewallSearch, readyFirewalls]);
-
   const { pageItems: pagedPorts, setPage: setPortPage, ...portPagination } = useTablePagination(
     filteredPorts,
     10,
     `${filter}|${approvedOnly}`
   );
 
+  const learnedDevices = workspaceState?.learnedDevices ?? [];
+  const learnedDeviceRows: FinderDevice[] = useMemo(
+    () =>
+      learnedDevices.map((device) => ({
+        interfaceName: device.interfaceName,
+        ipAddress: device.ipAddress,
+        macAddress: device.macAddress,
+        deviceName: device.deviceName,
+        oui: device.oui,
+        ouiApproved: device.ouiApproved,
+        switchPort: device.switchPort
+      })),
+    [learnedDevices]
+  );
+
+  const workspaceLoaded = Boolean(workspaceState && !workspaceState.error && workspaceState.learnedDevices !== undefined);
+
+  const fillManualResetFromDevice = (device: FinderDevice) => {
+    setManualMac(device.macAddress);
+    const portKey = device.switchPort || (device.interfaceName.includes("/") ? device.interfaceName : "");
+    if (portKey) {
+      setManualPort(portKey);
+    }
+    document.getElementById("manualMac")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    document.getElementById("manualMac")?.focus();
+  };
+
   return (
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>1. Select firewall</CardTitle>
+          <CardTitle>Select firewall</CardTitle>
           <CardDescription>
             PoE reset runs through FortiManager when configured. Ports come from managed FortiSwitch inventory on
             the FortiGate.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form action={loadWorkspaceAction} className="grid gap-4 md:grid-cols-[1fr_1fr_auto]">
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="firewallSearch">Find firewall</Label>
-              <Input
-                id="firewallSearch"
-                value={firewallSearch}
-                onChange={(event) => setFirewallSearch(event.target.value)}
-                placeholder={
-                  readyFirewalls.length > 10
-                    ? `Search ${readyFirewalls.length} firewalls by site, name, IP, or FMGR name…`
-                    : "Search firewalls by site, name, IP, or FMGR name…"
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="workspaceFirewallId">Firewall</Label>
-              <select
-                id="workspaceFirewallId"
-                name="firewallId"
-                value={firewallId}
-                onChange={(event) => setFirewallId(event.target.value)}
-                className="h-10 w-full rounded-md border border-[var(--border)] bg-white px-3 text-sm"
-                required
-              >
-                {firewallSelectOptions.map((firewall) => (
-                  <option key={firewall.id} value={firewall.id}>
-                    {firewall.siteNumber} - {firewall.name} ({firewall.ipAddress})
-                  </option>
-                ))}
-              </select>
-              {!firewallSearch.trim() && readyFirewalls.length > 10 ? (
-                <p className="text-xs text-[var(--muted-foreground)]">
-                  Showing first 10 of {readyFirewalls.length}. Search to find a specific FortiGate.
-                </p>
-              ) : null}
-            </div>
-            {isAdmin ? (
-              <div className="space-y-2">
-                <Label htmlFor="teamRole">OUI policy</Label>
-                <select
-                  id="teamRole"
-                  name="teamRole"
-                  value={teamRole}
-                  onChange={(event) => setTeamRole(event.target.value as "telecom" | "fuel")}
-                  className="h-10 w-full rounded-md border border-[var(--border)] bg-white px-3 text-sm"
-                >
-                  <option value="telecom">Telecom</option>
-                  <option value="fuel">Fuel</option>
-                </select>
-              </div>
-            ) : null}
+          <form action={loadWorkspaceAction} className="grid gap-4 md:grid-cols-[1fr_auto_auto]">
+            <SearchableFirewallSelect
+              firewalls={readyFirewalls}
+              value={firewallId}
+              onChange={setFirewallId}
+              disabled={readyFirewalls.length === 0}
+            />
+            <OuiPolicySelect
+              id="teamRole"
+              value={teamRole}
+              onChange={setTeamRole}
+              canChooseOuiPolicy={canChooseOuiPolicy}
+              isTelecom={isTelecom}
+              isFuel={isFuel}
+            />
             <Button className="self-end" type="submit" disabled={workspacePending || readyFirewalls.length === 0}>
               {workspacePending ? "Loading ports..." : "Load switch ports"}
             </Button>
@@ -192,7 +174,7 @@ export function PoeResetWorkspace({
       {ports.length > 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle>2. Choose a port</CardTitle>
+            <CardTitle>Choose a port</CardTitle>
             <CardDescription>
               Per-row Reset is enabled when the port has a learned MAC with an approved OUI. CMDB lists every port,
               but connected device MACs usually come from live switch telemetry or Device Inventory — use manual reset
@@ -266,7 +248,6 @@ export function PoeResetWorkspace({
                         key={port.portKey}
                         port={port}
                         firewallId={firewallId}
-                        isAdmin={isAdmin}
                         teamRole={teamRole}
                         resetAction={resetAction}
                         resetPending={resetPending}
@@ -288,9 +269,34 @@ export function PoeResetWorkspace({
         </Card>
       ) : null}
 
+      {workspaceLoaded ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>DHCP / ARP devices</CardTitle>
+            <CardDescription>
+              Learned hosts from this FortiGate&apos;s ARP and DHCP tables. Copy a MAC or use{" "}
+              <span className="font-medium">Use MAC</span> to fill manual reset below. Select rows and{" "}
+              <span className="font-medium">Ping selected</span> opens the floating ping monitor.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {learnedDeviceRows.length > 0 ? (
+              <DeviceFinderTable devices={learnedDeviceRows} onAutofill={fillManualResetFromDevice} />
+            ) : (
+              <p className="text-sm text-[var(--muted-foreground)]">
+                No ARP or DHCP entries were returned for this firewall.
+              </p>
+            )}
+            {workspaceState?.learnedDiagnostics?.length ? (
+              <LearnedDeviceDiagnostics diagnostics={workspaceState.learnedDiagnostics} />
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader>
-          <CardTitle>3. Manual reset</CardTitle>
+          <CardTitle>Manual reset</CardTitle>
           <CardDescription>
             Use this when you already know the switch serial and port, for example{" "}
             <span className="font-mono">S108FFTV21013920/port8</span>.
@@ -329,21 +335,14 @@ export function PoeResetWorkspace({
                 required
               />
             </div>
-            {isAdmin ? (
-              <div className="space-y-2">
-                <Label htmlFor="manualTeamRole">OUI policy</Label>
-                <select
-                  id="manualTeamRole"
-                  name="teamRole"
-                  value={teamRole}
-                  onChange={(event) => setTeamRole(event.target.value as "telecom" | "fuel")}
-                  className="h-10 w-full rounded-md border border-[var(--border)] bg-white px-3 text-sm"
-                >
-                  <option value="telecom">Telecom</option>
-                  <option value="fuel">Fuel</option>
-                </select>
-              </div>
-            ) : null}
+            <OuiPolicySelect
+              id="manualTeamRole"
+              value={teamRole}
+              onChange={setTeamRole}
+              canChooseOuiPolicy={canChooseOuiPolicy}
+              isTelecom={isTelecom}
+              isFuel={isFuel}
+            />
             <div className="md:col-span-2">
               <Button type="submit" variant="destructive" disabled={resetPending}>
                 {resetPending ? "Sending PoE reset..." : "Reset PoE manually"}
@@ -376,10 +375,191 @@ export function PoeResetWorkspace({
   );
 }
 
+function OuiPolicySelect({
+  id,
+  value,
+  onChange,
+  canChooseOuiPolicy,
+  isTelecom,
+  isFuel
+}: {
+  id: string;
+  value: "telecom" | "fuel";
+  onChange: (role: "telecom" | "fuel") => void;
+  canChooseOuiPolicy: boolean;
+  isTelecom: boolean;
+  isFuel: boolean;
+}) {
+  const telecomDisabled = !canChooseOuiPolicy && isFuel && !isTelecom;
+  const fuelDisabled = !canChooseOuiPolicy && isTelecom;
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>OUI policy</Label>
+      <select
+        id={id}
+        name="teamRole"
+        value={value}
+        onChange={(event) => onChange(event.target.value as "telecom" | "fuel")}
+        disabled={!canChooseOuiPolicy}
+        className="h-10 w-full rounded-md border border-[var(--border)] bg-white px-3 text-sm disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-[var(--muted-foreground)]"
+      >
+        <option value="telecom" disabled={telecomDisabled}>
+          Telecom
+        </option>
+        <option value="fuel" disabled={fuelDisabled}>
+          Fuel
+        </option>
+      </select>
+    </div>
+  );
+}
+
+function LearnedDeviceDiagnostics({
+  diagnostics
+}: {
+  diagnostics: Array<{ path: string; records: number; devices: number; error?: string; note?: string }>;
+}) {
+  const summary = diagnostics
+    .filter((entry) => !entry.error || entry.records > 0 || entry.devices > 0)
+    .map((entry) => {
+      const label = entry.note || entry.path.split("/").pop() || entry.path;
+      if (entry.error) {
+        return `${label}: unavailable`;
+      }
+      return `${label}: ${entry.devices || entry.records} device${(entry.devices || entry.records) === 1 ? "" : "s"}`;
+    })
+    .join(" · ");
+
+  if (!summary) {
+    return null;
+  }
+
+  return <p className="text-xs text-[var(--muted-foreground)]">Sources — {summary}</p>;
+}
+
+function formatFirewallLabel(firewall: Firewall) {
+  return `${firewall.name} (${firewall.ipAddress})`;
+}
+
+function SearchableFirewallSelect({
+  firewalls,
+  value,
+  onChange,
+  disabled
+}: {
+  firewalls: Firewall[];
+  value: string;
+  onChange: (firewallId: string) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const selected = firewalls.find((firewall) => String(firewall.id) === value);
+
+  const filteredFirewalls = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) {
+      return firewalls;
+    }
+    return firewalls.filter((firewall) =>
+      [
+        firewall.name,
+        firewall.ipAddress,
+        firewall.fmgDeviceName,
+        firewall.hostname
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
+    );
+  }, [firewalls, search]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    function handlePointerDown(event: MouseEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+        setSearch("");
+      }
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative space-y-2">
+      <Label htmlFor="workspaceFirewallId">Firewall</Label>
+      <input type="hidden" name="firewallId" value={value} required />
+      <Button
+        id="workspaceFirewallId"
+        type="button"
+        variant="outline"
+        disabled={disabled}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className="h-10 w-full justify-between font-normal"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="truncate text-left">
+          {selected ? formatFirewallLabel(selected) : disabled ? "No firewalls available" : "Select a firewall"}
+        </span>
+        <span aria-hidden className="ml-2 text-[var(--muted-foreground)]">
+          {open ? "▴" : "▾"}
+        </span>
+      </Button>
+      {open ? (
+        <div className="absolute z-20 mt-1 w-full rounded-md border border-[var(--border)] bg-white shadow-lg">
+          <div className="border-b border-[var(--border)] p-2">
+            <Input
+              autoFocus
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search site, name, IP, or FGT…"
+              aria-label="Search firewalls"
+            />
+          </div>
+          <ul className="max-h-60 overflow-auto p-1" role="listbox">
+            {filteredFirewalls.length === 0 ? (
+              <li className="px-3 py-2 text-sm text-[var(--muted-foreground)]">No firewalls match this search.</li>
+            ) : (
+              filteredFirewalls.map((firewall) => {
+                const id = String(firewall.id);
+                const isSelected = id === value;
+                return (
+                  <li key={firewall.id} role="option" aria-selected={isSelected}>
+                    <button
+                      type="button"
+                      className={`w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-slate-100 ${
+                        isSelected ? "bg-slate-100 font-medium" : ""
+                      }`}
+                      onClick={() => {
+                        onChange(id);
+                        setOpen(false);
+                        setSearch("");
+                      }}
+                    >
+                      {formatFirewallLabel(firewall)}
+                    </button>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function PoePortRowActions({
   port,
   firewallId,
-  isAdmin,
   teamRole,
   resetAction,
   resetPending,
@@ -388,7 +568,6 @@ function PoePortRowActions({
 }: {
   port: PoePortRow;
   firewallId: string;
-  isAdmin: boolean;
   teamRole: "telecom" | "fuel";
   resetAction: (payload: FormData) => void;
   resetPending: boolean;
@@ -438,7 +617,7 @@ function PoePortRowActions({
             <input type="hidden" name="firewallId" value={firewallId} />
             <input type="hidden" name="portName" value={port.portKey} />
             <input type="hidden" name="macAddress" value={port.macAddress || ""} />
-            {isAdmin ? <input type="hidden" name="teamRole" value={teamRole} /> : null}
+            <input type="hidden" name="teamRole" value={teamRole} />
             <Button type="submit" size="sm" variant="destructive" disabled={resetPending || !canReset}>
               {resetPending ? "..." : "Reset"}
             </Button>

@@ -835,8 +835,7 @@ function renderFirewallFormula(formula: string, firewall: FormulaFirewall) {
     id: String(firewall.id),
     name: firewall.name,
     ipAddress: firewall.ipAddress,
-    siteNumber: firewall.siteNumber,
-    siteName: firewall.siteName,
+    fmgDeviceName: firewall.fmgDeviceName || "",
     model: firewall.model || "",
     serialNumber: firewall.serialNumber || ""
   };

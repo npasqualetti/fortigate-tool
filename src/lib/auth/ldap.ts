@@ -16,6 +16,7 @@ export type LdapConnectionSettings = {
   domain: string;
   usernameAttribute: string;
   groupAttribute: string;
+  verifyTls?: boolean;
 };
 
 export type LdapTestResult = {
@@ -32,8 +33,31 @@ function resolveLdapSettings(overrides?: Partial<LdapConnectionSettings>): LdapC
     baseDn: overrides?.baseDn || requiredEnv("AD_BASE_DN"),
     domain: overrides?.domain || requiredEnv("AD_DOMAIN"),
     usernameAttribute: overrides?.usernameAttribute || optionalEnv("AD_USERNAME_ATTRIBUTE", "sAMAccountName"),
-    groupAttribute: overrides?.groupAttribute || optionalEnv("AD_GROUP_ATTRIBUTE", "memberOf")
+    groupAttribute: overrides?.groupAttribute || optionalEnv("AD_GROUP_ATTRIBUTE", "memberOf"),
+    verifyTls:
+      overrides?.verifyTls ??
+      (process.env.AD_VERIFY_TLS === undefined ? true : process.env.AD_VERIFY_TLS !== "false")
   };
+}
+
+function ldapClientOptions(settings: LdapConnectionSettings) {
+  const timeout = Number(process.env.AD_TEST_TIMEOUT_MS || 8000);
+  const verifyTls = settings.verifyTls ?? true;
+  const useLdaps = /^ldaps:\/\//i.test(settings.url);
+
+  return {
+    url: settings.url,
+    timeout,
+    connectTimeout: timeout,
+    tlsOptions: useLdaps && !verifyTls ? { rejectUnauthorized: false as const } : undefined
+  };
+}
+
+function formatLdapError(error: Error) {
+  if (/unable to get (local )?issuer certificate|self signed certificate|certificate/i.test(error.message)) {
+    return `${error.message} If your domain controller uses an internal CA or self-signed LDAPS certificate, uncheck "Verify TLS certificate" in Admin → Active Directory connection, save to .env, and restart the app.`;
+  }
+  return error.message;
 }
 
 export function ldapSettingsFromAdSettings(settings: AdSettings): LdapConnectionSettings {
@@ -42,7 +66,8 @@ export function ldapSettingsFromAdSettings(settings: AdSettings): LdapConnection
     baseDn: settings.adBaseDn,
     domain: settings.adDomain,
     usernameAttribute: settings.adUsernameAttribute,
-    groupAttribute: settings.adGroupAttribute
+    groupAttribute: settings.adGroupAttribute,
+    verifyTls: settings.adVerifyTls
   };
 }
 
@@ -77,11 +102,7 @@ export async function testLdapAuthentication(
   }
 
   const settings = resolveLdapSettings(overrides);
-  const client = new Client({
-    url: settings.url,
-    timeout: Number(process.env.AD_TEST_TIMEOUT_MS || 8000),
-    connectTimeout: Number(process.env.AD_TEST_TIMEOUT_MS || 8000)
-  });
+  const client = new Client(ldapClientOptions(settings));
 
   try {
     await client.bind(userPrincipalName(username, settings.domain), password);
@@ -114,7 +135,7 @@ export async function testLdapAuthentication(
     };
   } catch (caught) {
     if (caught instanceof Error) {
-      throw caught;
+      throw new Error(formatLdapError(caught));
     }
     throw new Error("LDAP test failed.");
   } finally {

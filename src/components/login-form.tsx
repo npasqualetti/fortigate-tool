@@ -15,7 +15,7 @@ export function LoginForm() {
       <CardHeader>
         <CardTitle>Fortinet RBAC Login</CardTitle>
         <CardDescription>
-          Use Active Directory credentials, or the local bootstrap admin for first-time setup.
+          Use Active Directory credentials, or local test accounts (admin, helpdesk, telecom, fuel) for development.
         </CardDescription>
       </CardHeader>
       <CardContent>

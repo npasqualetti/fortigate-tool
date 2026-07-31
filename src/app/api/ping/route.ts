@@ -3,7 +3,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { pingHosts } from "@/lib/ping";
 import type { AppRole } from "@/lib/types";
 
-const PING_ROLES: AppRole[] = ["network_admin", "telecom", "fuel"];
+const PING_ROLES: AppRole[] = ["network_admin", "help_desk", "telecom", "fuel"];
 
 type PingTargetInput = {
   id: string;

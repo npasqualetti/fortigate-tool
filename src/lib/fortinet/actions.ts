@@ -196,19 +196,23 @@ export async function cableTestFirewallInterfacesAction(
   }
 }
 
+function canChooseOuiPolicy(roles: string[]) {
+  return roles.includes("network_admin") || roles.includes("help_desk");
+}
+
 function policyRoleForUser(user: Awaited<ReturnType<typeof requireRole>>, formData: FormData): PoeTeamRole {
-  return user.roles.includes("network_admin")
-    ? (String(formData.get("teamRole") || "telecom") as PoeTeamRole)
-    : user.roles.includes("telecom")
-      ? "telecom"
-      : "fuel";
+  if (canChooseOuiPolicy(user.roles)) {
+    const role = String(formData.get("teamRole") || "telecom");
+    return role === "fuel" ? "fuel" : "telecom";
+  }
+  return user.roles.includes("telecom") ? "telecom" : "fuel";
 }
 
 export async function loadPoeWorkspaceAction(
   _: PoeWorkspaceState | undefined,
   formData: FormData
 ): Promise<PoeWorkspaceState> {
-  const user = await requireRole(["network_admin", "telecom", "fuel"]);
+  const user = await requireRole([...FIREWALL_TOOL_ROLES]);
   const firewallId = Number(formData.get("firewallId"));
   const firewall = getFirewall(firewallId);
 
@@ -229,7 +233,9 @@ export async function loadPoeWorkspaceAction(
 
   try {
     const client = createFortinetClient(firewall);
-    const ports = (await client.listPoePorts()).map((port) => {
+    const [rawPorts, learnedResult] = await Promise.all([client.listPoePorts(), client.learnedDeviceSources()]);
+
+    const ports = rawPorts.map((port) => {
       let oui: string | undefined;
       if (port.macAddress) {
         try {
@@ -245,22 +251,48 @@ export async function loadPoeWorkspaceAction(
       };
     });
 
+    const learnedDevices = learnedResult.devices.flatMap((device) => {
+      try {
+        const oui = getOuiFromMac(device.macAddress);
+        const switchPort = device.interfaceName.includes("/") ? device.interfaceName : undefined;
+        return [
+          {
+            interfaceName: device.interfaceName,
+            ipAddress: device.ipAddress,
+            macAddress: device.macAddress,
+            deviceName: device.deviceName,
+            oui,
+            ouiApproved: isOuiAllowed(device.macAddress, allowedOuis),
+            switchPort
+          }
+        ];
+      } catch {
+        return [];
+      }
+    });
+
     writeAudit({
       username: user.username,
       action: "fortinet.poe_workspace",
       targetType: "firewall",
       targetId: firewall.ipAddress,
       status: "success",
-      details: `Loaded ${ports.length} managed switch ports on ${firewall.name}.`
+      details: `Loaded ${ports.length} managed switch ports and ${learnedDevices.length} ARP/DHCP device(s) on ${firewall.name}.`
     });
 
     const approvedCount = ports.filter((port) => port.ouiApproved).length;
+    const learnedSummary =
+      learnedDevices.length > 0
+        ? ` ${learnedDevices.length} ARP/DHCP device${learnedDevices.length === 1 ? "" : "s"} loaded for MAC lookup.`
+        : "";
     return {
       message:
         ports.length > 0
-          ? `Loaded ${ports.length} port${ports.length === 1 ? "" : "s"} on ${firewall.name}. ${approvedCount} match ${teamRole} approved OUIs.`
-          : `No managed FortiSwitch ports were returned for ${firewall.name}. Confirm switch-controller is enabled and the device is managed.`,
+          ? `Loaded ${ports.length} port${ports.length === 1 ? "" : "s"} on ${firewall.name}. ${approvedCount} match ${teamRole} approved OUIs.${learnedSummary}`
+          : `No managed FortiSwitch ports were returned for ${firewall.name}. Confirm switch-controller is enabled and the device is managed.${learnedSummary}`,
       ports,
+      learnedDevices,
+      learnedDiagnostics: learnedResult.diagnostics,
       allowedOuis,
       connectionLabel: firewallConnectionLabel(firewall),
       firewallName: firewall.name
@@ -271,7 +303,7 @@ export async function loadPoeWorkspaceAction(
 }
 
 export async function poeResetAction(_: PoeResetActionState, formData: FormData): Promise<PoeResetActionState> {
-  const user = await requireRole(["network_admin", "telecom", "fuel"]);
+  const user = await requireRole([...FIREWALL_TOOL_ROLES]);
   const firewallId = Number(formData.get("firewallId"));
   const portName = String(formData.get("portName") || "").trim();
   const enteredMac = String(formData.get("macAddress") || "").trim();
@@ -352,7 +384,7 @@ export async function searchApprovedDevicesAction(
   } | undefined,
   formData: FormData
 ) {
-  const user = await requireRole(["network_admin", "telecom", "fuel"]);
+  const user = await requireRole([...FIREWALL_TOOL_ROLES]);
   const firewallId = Number(formData.get("firewallId"));
   const firewall = getFirewall(firewallId);
 

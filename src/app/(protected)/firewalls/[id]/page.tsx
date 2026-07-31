@@ -26,13 +26,6 @@ export default async function FirewallDetailPage({ params }: { params: Promise<{
   });
 
   return (
-    <FirewallWorkspace
-      firewall={{
-        ...toPublicFirewall(firewall),
-        siteNumber: firewall.siteNumber,
-        siteName: firewall.siteName
-      }}
-      initialSnapshot={snapshot}
-    />
+    <FirewallWorkspace firewall={toPublicFirewall(firewall)} initialSnapshot={snapshot} />
   );
 }

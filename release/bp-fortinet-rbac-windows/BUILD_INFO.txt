@@ -1,3 +1,4 @@
-built_utc=2026-05-19T23:27:19Z
-git_sha=no-git
-features=firewall-workspace,mobile-nav,responsive-admin
+built_utc=2026-07-31T18:30:26Z
+git_sha=3ce1048
+features=fortimanager-sync,poe-reset-workspace,dhcp-arp-devices,ad-ldaps-tls-toggle,local-test-users,helpdesk-oui-policy
+node=22.22.3-win-x64
