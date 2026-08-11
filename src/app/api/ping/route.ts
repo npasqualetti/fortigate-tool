@@ -28,11 +28,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ results: [] });
   }
 
-  const byIp = await pingHosts(targets.map((target) => target.ipAddress));
   const checkedAt = Date.now();
-
+  const byIp = await pingHosts(targets.map((target) => target.ipAddress));
   const results = targets.map((target) => {
-    const ping = byIp[target.ipAddress.trim()];
+    const host = target.ipAddress.trim();
+    const ping = byIp[host];
     return {
       id: target.id,
       ipAddress: target.ipAddress,

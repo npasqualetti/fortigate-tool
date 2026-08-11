@@ -16,6 +16,7 @@ export default async function DashboardPage() {
     user.roles.includes("telecom") ||
     user.roles.includes("fuel") ||
     user.roles.includes("network_admin");
+  const canUseAssets = canViewFirewalls;
 
   return (
     <div className="mx-auto max-w-3xl space-y-10">
@@ -40,6 +41,14 @@ export default async function DashboardPage() {
           . Your roles: {roleLabels.length ? roleLabels.join(", ") : "none assigned"}.
         </p>
         <ul className="list-disc space-y-1 pl-5 text-sm text-[var(--muted-foreground)]">
+          {canUseAssets ? (
+            <li>
+              <Link href="/assets" className="text-[var(--primary)] underline-offset-4 hover:underline">
+                Asset Identity Manager
+              </Link>{" "}
+              — search cached MAC/IP/switch-port history across sites (90-day retention).
+            </li>
+          ) : null}
           {canViewFirewalls ? (
             <li>
               <Link href="/firewalls" className="text-[var(--primary)] underline-offset-4 hover:underline">

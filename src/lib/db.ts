@@ -142,7 +142,46 @@ function migrate(database: Database.Database) {
       payload_json TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS asset_identities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      firewall_id INTEGER NOT NULL REFERENCES firewalls(id) ON DELETE CASCADE,
+      mac_address TEXT NOT NULL,
+      ip_address TEXT,
+      interface_name TEXT,
+      switch_id TEXT,
+      switch_port TEXT,
+      device_name TEXT,
+      oui TEXT,
+      sync_source TEXT,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      UNIQUE (firewall_id, mac_address)
+    );
+
+    CREATE TABLE IF NOT EXISTS asset_sync_sessions (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS asset_sync_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      last_full_sync_at TEXT,
+      last_full_sync_by TEXT,
+      last_full_sync_devices INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_asset_identities_last_seen ON asset_identities(last_seen_at);
+    CREATE INDEX IF NOT EXISTS idx_asset_identities_mac ON asset_identities(mac_address);
+    CREATE INDEX IF NOT EXISTS idx_asset_identities_ip ON asset_identities(ip_address);
+    CREATE INDEX IF NOT EXISTS idx_asset_identities_switch_port ON asset_identities(switch_port);
+    CREATE INDEX IF NOT EXISTS idx_asset_identities_firewall_last_seen ON asset_identities(firewall_id, last_seen_at DESC);
   `);
+
+  database.prepare("INSERT OR IGNORE INTO asset_sync_state (id) VALUES (1)").run();
 }
 
 function seedDefaults(database: Database.Database) {
@@ -727,4 +766,261 @@ export function siteByNumber(siteNumber: string): Site | null {
     )
     .get(siteNumber) as Site | undefined;
   return row || null;
+}
+
+type AssetIdentityUpsertInput = {
+  macAddress: string;
+  ipAddress: string | null;
+  interfaceName: string | null;
+  switchId: string | null;
+  switchPort: string | null;
+  deviceName: string | null;
+  oui: string | null;
+  syncSource: string;
+};
+
+export function upsertAssetIdentities(firewallId: number, rows: AssetIdentityUpsertInput[]) {
+  if (rows.length === 0) {
+    return 0;
+  }
+
+  const now = new Date().toISOString();
+  const statement = connection().prepare(
+    `INSERT INTO asset_identities (
+      firewall_id, mac_address, ip_address, interface_name, switch_id, switch_port,
+      device_name, oui, sync_source, first_seen_at, last_seen_at
+    ) VALUES (
+      @firewallId, @macAddress, @ipAddress, @interfaceName, @switchId, @switchPort,
+      @deviceName, @oui, @syncSource, @now, @now
+    )
+    ON CONFLICT(firewall_id, mac_address) DO UPDATE SET
+      ip_address = CASE
+        WHEN excluded.ip_address IS NOT NULL AND excluded.ip_address != '' THEN excluded.ip_address
+        ELSE asset_identities.ip_address
+      END,
+      interface_name = excluded.interface_name,
+      switch_id = COALESCE(excluded.switch_id, asset_identities.switch_id),
+      switch_port = COALESCE(excluded.switch_port, asset_identities.switch_port),
+      device_name = COALESCE(excluded.device_name, asset_identities.device_name),
+      oui = COALESCE(excluded.oui, asset_identities.oui),
+      sync_source = excluded.sync_source,
+      last_seen_at = excluded.last_seen_at`
+  );
+
+  const runBatch = connection().transaction((batch: AssetIdentityUpsertInput[]) => {
+    for (const row of batch) {
+      statement.run({
+        firewallId,
+        macAddress: row.macAddress,
+        ipAddress: row.ipAddress,
+        interfaceName: row.interfaceName,
+        switchId: row.switchId,
+        switchPort: row.switchPort,
+        deviceName: row.deviceName,
+        oui: row.oui,
+        syncSource: row.syncSource,
+        now
+      });
+    }
+  });
+
+  for (let offset = 0; offset < rows.length; offset += 500) {
+    runBatch(rows.slice(offset, offset + 500));
+  }
+
+  return rows.length;
+}
+
+export function pruneAssetIdentities(retentionDays: number) {
+  return connection()
+    .prepare("DELETE FROM asset_identities WHERE last_seen_at < datetime('now', ?)")
+    .run(`-${retentionDays} days`);
+}
+
+export function searchAssetIdentities(input: {
+  query?: string;
+  firewallId?: number;
+  siteId?: number;
+  status?: "active" | "stale" | "all";
+  retentionDays: number;
+  staleDays: number;
+  page: number;
+  pageSize: number;
+}) {
+  const conditions = ["a.last_seen_at >= datetime('now', ?)"];
+  const params: Array<string | number> = [`-${input.retentionDays} days`];
+
+  if (input.firewallId) {
+    conditions.push("a.firewall_id = ?");
+    params.push(input.firewallId);
+  }
+  if (input.siteId) {
+    conditions.push("f.site_id = ?");
+    params.push(input.siteId);
+  }
+  if (input.status === "active") {
+    conditions.push("a.last_seen_at >= datetime('now', ?)");
+    params.push(`-${input.staleDays} days`);
+  } else if (input.status === "stale") {
+    conditions.push("a.last_seen_at < datetime('now', ?)");
+    params.push(`-${input.staleDays} days`);
+  }
+
+  const query = input.query?.trim();
+  if (query) {
+    const sanitized = query.replace(/[%_]/g, "");
+    const like = `%${sanitized}%`;
+    conditions.push(
+      `(a.mac_address LIKE ? COLLATE NOCASE OR IFNULL(a.ip_address, '') LIKE ? OR IFNULL(a.ip_address, '') = ? OR IFNULL(a.device_name, '') LIKE ? COLLATE NOCASE OR IFNULL(a.switch_port, '') LIKE ? COLLATE NOCASE OR IFNULL(a.interface_name, '') LIKE ? COLLATE NOCASE OR IFNULL(s.site_number, '') LIKE ? OR IFNULL(s.name, '') LIKE ? COLLATE NOCASE OR IFNULL(f.name, '') LIKE ? COLLATE NOCASE)`
+    );
+    params.push(like, like, sanitized, like, like, like, like, like, like);
+  }
+
+  const whereClause = conditions.join(" AND ");
+  const countRow = connection()
+    .prepare(
+      `SELECT COUNT(*) as count
+       FROM asset_identities a
+       JOIN firewalls f ON f.id = a.firewall_id
+       JOIN sites s ON s.id = f.site_id
+       WHERE ${whereClause}`
+    )
+    .get(...params) as { count: number };
+
+  const safePage = Math.max(1, input.page);
+  const safePageSize = Math.min(Math.max(input.pageSize, 1), 100);
+  const offset = (safePage - 1) * safePageSize;
+
+  const rows = connection()
+    .prepare(
+      `SELECT
+        a.id,
+        a.firewall_id as firewallId,
+        f.name as firewallName,
+        f.ip_address as firewallIp,
+        s.site_number as siteNumber,
+        s.name as siteName,
+        s.city as siteCity,
+        s.state as siteState,
+        a.mac_address as macAddress,
+        a.ip_address as ipAddress,
+        a.interface_name as interfaceName,
+        a.switch_id as switchId,
+        a.switch_port as switchPort,
+        a.device_name as deviceName,
+        a.oui,
+        a.sync_source as syncSource,
+        a.first_seen_at as firstSeenAt,
+        a.last_seen_at as lastSeenAt,
+        CASE WHEN a.last_seen_at >= datetime('now', ?) THEN 'active' ELSE 'stale' END as status
+       FROM asset_identities a
+       JOIN firewalls f ON f.id = a.firewall_id
+       JOIN sites s ON s.id = f.site_id
+       WHERE ${whereClause}
+       ORDER BY a.last_seen_at DESC, a.mac_address ASC
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, `-${input.staleDays} days`, safePageSize, offset) as import("@/lib/assets/types").AssetIdentityRecord[];
+
+  return {
+    items: rows,
+    total: countRow.count,
+    page: safePage,
+    pageSize: safePageSize
+  };
+}
+
+export function getAssetInventoryStats(retentionDays: number, staleDays: number) {
+  pruneAssetIdentities(retentionDays);
+  const counts = connection()
+    .prepare(
+      `SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN last_seen_at >= datetime('now', ?) THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN last_seen_at < datetime('now', ?) THEN 1 ELSE 0 END) as stale
+       FROM asset_identities
+       WHERE last_seen_at >= datetime('now', ?)`
+    )
+    .get(`-${staleDays} days`, `-${staleDays} days`, `-${retentionDays} days`) as {
+    total: number;
+    active: number | null;
+    stale: number | null;
+  };
+
+  const syncState = connection()
+    .prepare(
+      `SELECT last_full_sync_at as lastFullSyncAt, last_full_sync_by as lastFullSyncBy, last_full_sync_devices as lastFullSyncDevices
+       FROM asset_sync_state WHERE id = 1`
+    )
+    .get() as
+    | {
+        lastFullSyncAt: string | null;
+        lastFullSyncBy: string | null;
+        lastFullSyncDevices: number;
+      }
+    | undefined;
+
+  return {
+    total: counts.total || 0,
+    active: counts.active || 0,
+    stale: counts.stale || 0,
+    lastFullSyncAt: syncState?.lastFullSyncAt || null,
+    lastFullSyncBy: syncState?.lastFullSyncBy || null,
+    lastFullSyncDevices: syncState?.lastFullSyncDevices || 0
+  };
+}
+
+export function markAssetFullSyncComplete(username: string, ingested: number) {
+  connection()
+    .prepare(
+      `UPDATE asset_sync_state
+       SET last_full_sync_at = CURRENT_TIMESTAMP,
+           last_full_sync_by = @username,
+           last_full_sync_devices = @ingested,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = 1`
+    )
+    .run({ username, ingested });
+}
+
+export function saveAssetSyncSession(input: { id: string; username: string; payloadJson: string }) {
+  pruneAssetSyncSessions();
+  connection()
+    .prepare(
+      `INSERT INTO asset_sync_sessions (id, username, payload_json)
+       VALUES (@id, @username, @payloadJson)`
+    )
+    .run(input);
+}
+
+export function getAssetSyncSessionRow(id: string) {
+  return connection()
+    .prepare(
+      `SELECT id, username, payload_json as payloadJson, created_at as createdAt
+       FROM asset_sync_sessions WHERE id = ?`
+    )
+    .get(id) as
+    | {
+        id: string;
+        username: string;
+        payloadJson: string;
+        createdAt: string;
+      }
+    | undefined;
+}
+
+export function updateAssetSyncSession(id: string, payloadJson: string) {
+  connection()
+    .prepare("UPDATE asset_sync_sessions SET payload_json = ? WHERE id = ?")
+    .run(payloadJson, id);
+}
+
+export function deleteAssetSyncSession(id: string) {
+  connection().prepare("DELETE FROM asset_sync_sessions WHERE id = ?").run(id);
+}
+
+export function pruneAssetSyncSessions(maxAgeHours = 6) {
+  connection()
+    .prepare("DELETE FROM asset_sync_sessions WHERE created_at < datetime('now', ?)")
+    .run(`-${maxAgeHours} hours`);
 }

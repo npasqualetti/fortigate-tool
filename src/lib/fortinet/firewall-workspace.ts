@@ -157,16 +157,28 @@ export async function runFirewallCableTest(
 export async function runFirewallPing(
   firewall: FirewallRecord,
   host: string,
-  options?: { interfaceName?: string }
+  options?: { interfaceName?: string; count?: number; allowServerFallback?: boolean }
 ): Promise<FortinetPingResult> {
   const client = createFortinetClient(firewall);
   const fortigateResult = await client.pingHost(host, {
-    count: 4,
+    count: options?.count ?? 4,
     interfaceName: options?.interfaceName
   });
 
-  if (fortigateResult.reachable || fortigateResult.avgRttMs !== undefined) {
+  if (
+    fortigateResult.reachable ||
+    fortigateResult.avgRttMs !== undefined ||
+    fortigateResult.minRttMs !== undefined ||
+    (fortigateResult.packetsReceived ?? 0) > 0
+  ) {
     return fortigateResult;
+  }
+
+  if ((fortigateResult.packetsSent ?? 0) > 0 || fortigateResult.raw) {
+    return {
+      ...fortigateResult,
+      error: fortigateResult.error || "Host unreachable from FortiGate."
+    };
   }
 
   if (!isPingableIpv4(host)) {
@@ -176,13 +188,20 @@ export async function runFirewallPing(
     };
   }
 
+  if (options?.allowServerFallback === false) {
+    return {
+      ...fortigateResult,
+      error: fortigateResult.error || "FortiGate ping is unavailable for this host."
+    };
+  }
+
   const serverPing = await pingHost(host);
   return {
     host,
     reachable: serverPing.reachable,
     avgRttMs: serverPing.latencyMs ?? undefined,
     source: "server",
-    error: fortigateResult.error,
+    error: serverPing.reachable ? undefined : serverPing.error || fortigateResult.error,
     raw: fortigateResult.raw
   };
 }

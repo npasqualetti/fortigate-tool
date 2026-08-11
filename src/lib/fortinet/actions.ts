@@ -2,7 +2,8 @@
 
 import { createFortinetClient } from "@/lib/fortinet/create-client";
 import { firewallConnectionLabel, isFirewallApiReady } from "@/lib/fortinet/connectivity";
-import type { PoeResetActionState, PoeWorkspaceState } from "@/lib/fortinet/poe-workspace";
+import type { PoeLearnedDevice, PoePortRow, PoeResetActionState, PoeWorkspaceState } from "@/lib/fortinet/poe-workspace";
+import { matchPortKeys } from "@/lib/fortinet/switch-port-enrichment";
 import { requireRole } from "@/lib/auth/session";
 import { getFirewall, listAllowedOuis, listFirewalls, writeAudit } from "@/lib/db";
 import { getOuiFromMac, isOuiAllowed } from "@/lib/mac";
@@ -208,6 +209,54 @@ function policyRoleForUser(user: Awaited<ReturnType<typeof requireRole>>, formDa
   return user.roles.includes("telecom") ? "telecom" : "fuel";
 }
 
+function attachLearnedDevicesToPorts(ports: PoePortRow[], learnedDevices: PoeLearnedDevice[]): PoePortRow[] {
+  const byPortKey = new Map<string, PoeLearnedDevice>();
+  for (const device of learnedDevices) {
+    if (!device.switchPort) {
+      continue;
+    }
+    byPortKey.set(device.switchPort.toLowerCase(), device);
+  }
+
+  return ports.map((port) => {
+    let match = byPortKey.get(port.portKey.toLowerCase());
+    if (!match) {
+      for (const device of learnedDevices) {
+        if (device.switchPort && matchPortKeys(device.switchPort, port.portKey)) {
+          match = device;
+          break;
+        }
+      }
+    }
+    if (!match) {
+      return port;
+    }
+    return {
+      ...port,
+      macAddress: port.macAddress || match.macAddress,
+      ipAddress: port.ipAddress || (match.ipAddress !== "unknown" ? match.ipAddress : undefined)
+    };
+  });
+}
+
+function decoratePortsWithOui(ports: PoePortRow[], allowedOuis: string[]) {
+  return ports.map((port) => {
+    let oui: string | undefined;
+    if (port.macAddress) {
+      try {
+        oui = getOuiFromMac(port.macAddress);
+      } catch {
+        oui = undefined;
+      }
+    }
+    return {
+      ...port,
+      oui,
+      ouiApproved: port.macAddress ? isOuiAllowed(port.macAddress, allowedOuis) : false
+    };
+  });
+}
+
 export async function loadPoeWorkspaceAction(
   _: PoeWorkspaceState | undefined,
   formData: FormData
@@ -235,22 +284,6 @@ export async function loadPoeWorkspaceAction(
     const client = createFortinetClient(firewall);
     const [rawPorts, learnedResult] = await Promise.all([client.listPoePorts(), client.learnedDeviceSources()]);
 
-    const ports = rawPorts.map((port) => {
-      let oui: string | undefined;
-      if (port.macAddress) {
-        try {
-          oui = getOuiFromMac(port.macAddress);
-        } catch {
-          oui = undefined;
-        }
-      }
-      return {
-        ...port,
-        oui,
-        ouiApproved: port.macAddress ? isOuiAllowed(port.macAddress, allowedOuis) : false
-      };
-    });
-
     const learnedDevices = learnedResult.devices.flatMap((device) => {
       try {
         const oui = getOuiFromMac(device.macAddress);
@@ -271,6 +304,8 @@ export async function loadPoeWorkspaceAction(
       }
     });
 
+    const ports = decoratePortsWithOui(attachLearnedDevicesToPorts(rawPorts, learnedDevices), allowedOuis);
+
     writeAudit({
       username: user.username,
       action: "fortinet.poe_workspace",
@@ -281,14 +316,16 @@ export async function loadPoeWorkspaceAction(
     });
 
     const approvedCount = ports.filter((port) => port.ouiApproved).length;
+    const macCount = ports.filter((port) => port.macAddress).length;
+    const mappedDeviceCount = learnedDevices.filter((device) => device.switchPort).length;
     const learnedSummary =
       learnedDevices.length > 0
-        ? ` ${learnedDevices.length} ARP/DHCP device${learnedDevices.length === 1 ? "" : "s"} loaded for MAC lookup.`
+        ? ` ${learnedDevices.length} ARP/DHCP device${learnedDevices.length === 1 ? "" : "s"} loaded (${mappedDeviceCount} mapped to switch ports).`
         : "";
     return {
       message:
         ports.length > 0
-          ? `Loaded ${ports.length} port${ports.length === 1 ? "" : "s"} on ${firewall.name}. ${approvedCount} match ${teamRole} approved OUIs.${learnedSummary}`
+          ? `Loaded ${ports.length} port${ports.length === 1 ? "" : "s"} on ${firewall.name}. ${macCount} with MAC, ${approvedCount} approved for ${teamRole} reset.${learnedSummary}`
           : `No managed FortiSwitch ports were returned for ${firewall.name}. Confirm switch-controller is enabled and the device is managed.${learnedSummary}`,
       ports,
       learnedDevices,

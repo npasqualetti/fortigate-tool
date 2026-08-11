@@ -283,20 +283,7 @@ export function DeviceFinderTable({
                         <span className="ml-2 text-xs text-[var(--muted-foreground)]">(not pingable)</span>
                       ) : null}
                     </td>
-                    <td className={resizableTdClassName("font-mono text-xs")}>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span>{device.macAddress}</span>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-xs"
-                          onClick={() => void navigator.clipboard.writeText(device.macAddress)}
-                        >
-                          Copy
-                        </Button>
-                      </div>
-                    </td>
+                    <td className={resizableTdClassName("font-mono text-xs")}>{device.macAddress}</td>
                     <td className={resizableTdClassName("font-mono")}>{device.oui}</td>
                     {showOuiStatusColumn ? (
                       <td className={resizableTdClassName("p-2")}>

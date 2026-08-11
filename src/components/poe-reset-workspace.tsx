@@ -21,8 +21,11 @@ import { useTablePagination } from "@/hooks/use-table-pagination";
 import { TablePagination } from "@/components/ui/table-pagination";
 import { useActionStateToast } from "@/hooks/use-action-state-toast";
 import { DeviceFinderTable, type FinderDevice } from "@/components/device-finder-table";
+import { usePingMonitor, type PingMonitorTarget } from "@/components/ping-monitor-provider";
+import { isPingableIpv4 } from "@/lib/ping-utils";
 
 const PORT_TABLE_COLUMNS: ResizableColumnDef[] = [
+  { id: "select", defaultWidth: 48, minWidth: 44 },
   { id: "switch", defaultWidth: 160, minWidth: 120 },
   { id: "port", defaultWidth: 88, minWidth: 72 },
   { id: "mac", defaultWidth: 150, minWidth: 120 },
@@ -46,6 +49,8 @@ export function PoeResetWorkspace({
   const [approvedOnly, setApprovedOnly] = useState(false);
   const [manualPort, setManualPort] = useState("");
   const [manualMac, setManualMac] = useState("");
+  const [selectedPortKeys, setSelectedPortKeys] = useState<Set<string>>(new Set());
+  const { startPing, running: pingRunning } = usePingMonitor();
   const canChooseOuiPolicy =
     user.roles.includes("network_admin") || user.roles.includes("help_desk");
   const isTelecom = user.roles.includes("telecom");
@@ -91,6 +96,51 @@ export function PoeResetWorkspace({
     10,
     `${filter}|${approvedOnly}`
   );
+
+  const filteredPortKeys = useMemo(() => filteredPorts.map((port) => port.portKey), [filteredPorts]);
+  const allFilteredPortsSelected =
+    filteredPortKeys.length > 0 && filteredPortKeys.every((portKey) => selectedPortKeys.has(portKey));
+
+  const selectedPingablePorts = useMemo(() => {
+    return ports
+      .filter((port) => selectedPortKeys.has(port.portKey) && port.ipAddress && isPingableIpv4(port.ipAddress))
+      .map(
+        (port): PingMonitorTarget => ({
+          id: port.portKey,
+          ipAddress: port.ipAddress!.trim(),
+          interfaceName: port.portKey,
+          macAddress: port.macAddress || ""
+        })
+      );
+  }, [ports, selectedPortKeys]);
+
+  const toggleAllFilteredPorts = () => {
+    setSelectedPortKeys((current) => {
+      const next = new Set(current);
+      if (allFilteredPortsSelected) {
+        for (const portKey of filteredPortKeys) {
+          next.delete(portKey);
+        }
+      } else {
+        for (const portKey of filteredPortKeys) {
+          next.add(portKey);
+        }
+      }
+      return next;
+    });
+  };
+
+  const togglePortSelection = (portKey: string) => {
+    setSelectedPortKeys((current) => {
+      const next = new Set(current);
+      if (next.has(portKey)) {
+        next.delete(portKey);
+      } else {
+        next.add(portKey);
+      }
+      return next;
+    });
+  };
 
   const learnedDevices = workspaceState?.learnedDevices ?? [];
   const learnedDeviceRows: FinderDevice[] = useMemo(
@@ -176,9 +226,8 @@ export function PoeResetWorkspace({
           <CardHeader>
             <CardTitle>Choose a port</CardTitle>
             <CardDescription>
-              Per-row Reset is enabled when the port has a learned MAC with an approved OUI. CMDB lists every port,
-              but connected device MACs usually come from live switch telemetry or Device Inventory — use manual reset
-              below when MAC is unknown.
+              Match DHCP/ARP devices to ports using Device Inventory and switch telemetry. Rows with a learned MAC show
+              OUI approval status; use Manual reset when MAC is still unknown.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -192,14 +241,24 @@ export function PoeResetWorkspace({
                   placeholder="Switch serial, port, MAC, IP, or OUI"
                 />
               </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={approvedOnly}
-                  onChange={(event) => setApprovedOnly(event.target.checked)}
-                />
-                Show approved ports only
-              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={selectedPingablePorts.length === 0}
+                  onClick={() => startPing(selectedPingablePorts)}
+                >
+                  {pingRunning ? "Update ping selection" : `Ping selected (${selectedPingablePorts.length})`}
+                </Button>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={approvedOnly}
+                    onChange={(event) => setApprovedOnly(event.target.checked)}
+                  />
+                  Show approved ports only
+                </label>
+              </div>
             </div>
 
             <div className="space-y-4">
@@ -213,24 +272,33 @@ export function PoeResetWorkspace({
                 <thead className="bg-slate-100">
                   <tr>
                     <ResizableTh columnIndex={0} className="p-2">
-                      Switch
+                      <input
+                        type="checkbox"
+                        aria-label="Select all filtered ports"
+                        checked={allFilteredPortsSelected}
+                        onChange={toggleAllFilteredPorts}
+                        disabled={filteredPorts.length === 0}
+                      />
                     </ResizableTh>
                     <ResizableTh columnIndex={1} className="p-2">
-                      Port
+                      Switch
                     </ResizableTh>
                     <ResizableTh columnIndex={2} className="p-2">
-                      MAC
+                      Port
                     </ResizableTh>
                     <ResizableTh columnIndex={3} className="p-2">
-                      IP
+                      MAC
                     </ResizableTh>
                     <ResizableTh columnIndex={4} className="p-2">
-                      OUI
+                      IP
                     </ResizableTh>
                     <ResizableTh columnIndex={5} className="p-2">
-                      Status
+                      OUI
                     </ResizableTh>
                     <ResizableTh columnIndex={6} className="p-2">
+                      Status
+                    </ResizableTh>
+                    <ResizableTh columnIndex={7} className="p-2">
                       Action
                     </ResizableTh>
                   </tr>
@@ -238,7 +306,7 @@ export function PoeResetWorkspace({
                 <tbody>
                   {filteredPorts.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="p-4 text-center text-sm text-[var(--muted-foreground)]">
+                      <td colSpan={8} className="p-4 text-center text-sm text-[var(--muted-foreground)]">
                         No ports match this filter.
                       </td>
                     </tr>
@@ -252,6 +320,8 @@ export function PoeResetWorkspace({
                         resetAction={resetAction}
                         resetPending={resetPending}
                         lastResetPort={resetState?.portKey}
+                        selected={selectedPortKeys.has(port.portKey)}
+                        onToggleSelect={() => togglePortSelection(port.portKey)}
                         onUseManual={(portKey) => {
                           setManualPort(portKey);
                           setManualMac("");
@@ -274,9 +344,9 @@ export function PoeResetWorkspace({
           <CardHeader>
             <CardTitle>DHCP / ARP devices</CardTitle>
             <CardDescription>
-              Learned hosts from this FortiGate&apos;s ARP and DHCP tables. Copy a MAC or use{" "}
-              <span className="font-medium">Use MAC</span> to fill manual reset below. Select rows and{" "}
-              <span className="font-medium">Ping selected</span> opens the floating ping monitor.
+              Learned hosts from this FortiGate&apos;s ARP and DHCP tables. Use{" "}
+              <span className="font-medium">Use MAC</span> to fill manual reset below, or select rows and{" "}
+              <span className="font-medium">Ping selected</span> to ping their IP addresses from this app server.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -294,63 +364,65 @@ export function PoeResetWorkspace({
         </Card>
       ) : null}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Manual reset</CardTitle>
-          <CardDescription>
-            Use this when you already know the switch serial and port, for example{" "}
-            <span className="font-mono">S108FFTV21013920/port8</span>.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form
-            action={resetAction}
-            className="grid gap-4 md:grid-cols-2"
-            onSubmit={(event) => {
-              if (!window.confirm("Reset PoE on this port? The connected device will briefly lose power.")) {
-                event.preventDefault();
-              }
-            }}
-          >
-            <input type="hidden" name="firewallId" value={firewallId} />
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="manualPort">Port</Label>
-              <Input
-                id="manualPort"
-                name="portName"
-                value={manualPort}
-                onChange={(event) => setManualPort(event.target.value)}
-                placeholder="SwitchSerial/port8"
-                required
+      {workspaceLoaded ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Manual reset</CardTitle>
+            <CardDescription>
+              Use this when you already know the switch serial and port, for example{" "}
+              <span className="font-mono">S108FFTV21013920/port8</span>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form
+              action={resetAction}
+              className="grid gap-4 md:grid-cols-2"
+              onSubmit={(event) => {
+                if (!window.confirm("Reset PoE on this port? The connected device will briefly lose power.")) {
+                  event.preventDefault();
+                }
+              }}
+            >
+              <input type="hidden" name="firewallId" value={firewallId} />
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="manualPort">Port</Label>
+                <Input
+                  id="manualPort"
+                  name="portName"
+                  value={manualPort}
+                  onChange={(event) => setManualPort(event.target.value)}
+                  placeholder="SwitchSerial/port8"
+                  required
+                />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="manualMac">Device MAC (required for OUI check)</Label>
+                <Input
+                  id="manualMac"
+                  name="macAddress"
+                  value={manualMac}
+                  onChange={(event) => setManualMac(event.target.value)}
+                  placeholder="AA:BB:CC:DD:EE:FF"
+                  required
+                />
+              </div>
+              <OuiPolicySelect
+                id="manualTeamRole"
+                value={teamRole}
+                onChange={setTeamRole}
+                canChooseOuiPolicy={canChooseOuiPolicy}
+                isTelecom={isTelecom}
+                isFuel={isFuel}
               />
-            </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="manualMac">Device MAC (required for OUI check)</Label>
-              <Input
-                id="manualMac"
-                name="macAddress"
-                value={manualMac}
-                onChange={(event) => setManualMac(event.target.value)}
-                placeholder="AA:BB:CC:DD:EE:FF"
-                required
-              />
-            </div>
-            <OuiPolicySelect
-              id="manualTeamRole"
-              value={teamRole}
-              onChange={setTeamRole}
-              canChooseOuiPolicy={canChooseOuiPolicy}
-              isTelecom={isTelecom}
-              isFuel={isFuel}
-            />
-            <div className="md:col-span-2">
-              <Button type="submit" variant="destructive" disabled={resetPending}>
-                {resetPending ? "Sending PoE reset..." : "Reset PoE manually"}
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
+              <div className="md:col-span-2">
+                <Button type="submit" variant="destructive" disabled={resetPending}>
+                  {resetPending ? "Sending PoE reset..." : "Reset PoE manually"}
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {resetState?.message || resetState?.error ? (
         <Card className={resetState.error ? "border-red-200 bg-red-50" : "border-green-200 bg-green-50"}>
@@ -564,6 +636,8 @@ function PoePortRowActions({
   resetAction,
   resetPending,
   lastResetPort,
+  selected,
+  onToggleSelect,
   onUseManual
 }: {
   port: PoePortRow;
@@ -572,6 +646,8 @@ function PoePortRowActions({
   resetAction: (payload: FormData) => void;
   resetPending: boolean;
   lastResetPort?: string;
+  selected: boolean;
+  onToggleSelect: () => void;
   onUseManual: (portKey: string) => void;
 }) {
   const canReset = port.ouiApproved;
@@ -581,13 +657,27 @@ function PoePortRowActions({
     : !port.ouiApproved
       ? "OUI not approved"
       : null;
+  const pingable = port.ipAddress ? isPingableIpv4(port.ipAddress) : false;
 
   return (
     <tr className="border-t border-[var(--border)]">
+      <td className="p-2">
+        <input
+          type="checkbox"
+          aria-label={`Select ${port.portKey}`}
+          checked={selected}
+          onChange={onToggleSelect}
+        />
+      </td>
       <td className={resizableTdClassName("p-2 font-mono text-xs")}>{port.switchId}</td>
       <td className={resizableTdClassName("p-2 font-mono text-xs")}>{port.portName}</td>
       <td className={resizableTdClassName("font-mono text-xs")}>{port.macAddress || "—"}</td>
-      <td className={resizableTdClassName("font-mono text-xs")}>{port.ipAddress || "—"}</td>
+      <td className={resizableTdClassName("font-mono text-xs")}>
+        {port.ipAddress || "—"}
+        {port.ipAddress && !pingable ? (
+          <span className="ml-2 text-xs text-[var(--muted-foreground)]">(not pingable)</span>
+        ) : null}
+      </td>
       <td className={resizableTdClassName("font-mono text-xs")}>{port.oui || "—"}</td>
       <td className={resizableTdClassName("p-2")}>
         {port.ouiApproved ? (

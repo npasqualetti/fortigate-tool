@@ -13,12 +13,11 @@ import type { ResizableColumnDef } from "@/hooks/use-resizable-table-columns";
 
 const PING_MONITOR_COLUMNS: ResizableColumnDef[] = [
   { id: "ip", defaultWidth: 120, minWidth: 96 },
-  { id: "interface", defaultWidth: 120, minWidth: 88 },
-  { id: "status", defaultWidth: 96, minWidth: 72 },
+  { id: "status", defaultWidth: 160, minWidth: 96 },
   { id: "rtt", defaultWidth: 80, minWidth: 64 }
 ];
 
-type PingSortKey = "ipAddress" | "interfaceName" | "status" | "latencyMs";
+type PingSortKey = "ipAddress" | "status" | "latencyMs";
 type SortDirection = "asc" | "desc";
 
 export type PingMonitorTarget = {
@@ -101,12 +100,36 @@ export function PingMonitorProvider({ children }: { children: React.ReactNode })
     const response = await fetch("/api/ping", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
       body: JSON.stringify({
-        targets: activeTargets.map((target) => ({ id: target.id, ipAddress: target.ipAddress }))
+        targets: activeTargets.map((target) => ({
+          id: target.id,
+          ipAddress: target.ipAddress
+        }))
       })
     });
 
     if (!response.ok) {
+      let errorMessage = "Ping request failed.";
+      try {
+        const payload = (await response.json()) as { error?: string };
+        if (payload.error) {
+          errorMessage = payload.error;
+        }
+      } catch {
+        // ignore parse errors
+      }
+      const checkedAt = Date.now();
+      mergeResults(
+        activeTargets.map((target) => ({
+          id: target.id,
+          ipAddress: target.ipAddress,
+          reachable: false,
+          latencyMs: null,
+          error: errorMessage,
+          checkedAt
+        }))
+      );
       return;
     }
 
@@ -228,8 +251,8 @@ function PingMonitorFloatingPanel({
     const query = filter.trim().toLowerCase();
     const filtered = query
       ? results.filter((row) => {
-          const statusLabel = row.checkedAt === null ? "pending" : row.reachable ? "up" : "down";
-          const haystack = [row.ipAddress, row.interfaceName, row.macAddress, statusLabel, row.latencyMs?.toString()]
+          const statusLabel = formatPingStatusLabel(row);
+          const haystack = [row.ipAddress, row.macAddress, statusLabel, row.latencyMs?.toString()]
             .filter(Boolean)
             .join(" ")
             .toLowerCase();
@@ -262,7 +285,8 @@ function PingMonitorFloatingPanel({
             <div>
               <p className="font-semibold">Ping monitor</p>
               <p className="text-xs text-[var(--muted-foreground)]">
-                {running ? "Refreshing every second" : "Stopped"} · {reachableCount}/{results.length} reachable
+                {running ? "Refreshing every second" : "Stopped"} · {reachableCount}/{results.length} reachable · from
+                this app server
               </p>
             </div>
             <div className="flex shrink-0 gap-1">
@@ -278,7 +302,7 @@ function PingMonitorFloatingPanel({
             <Input
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
-              placeholder="Search IP, interface, status, or RTT"
+              placeholder="Search IP, status, or RTT"
               className="h-8 text-xs"
             />
           </div>
@@ -300,14 +324,6 @@ function PingMonitorFloatingPanel({
                   />
                   <PingSortHeader
                     columnIndex={1}
-                    label="Interface"
-                    column="interfaceName"
-                    sortKey={sortKey}
-                    sortDirection={sortDirection}
-                    onSort={toggleSort}
-                  />
-                  <PingSortHeader
-                    columnIndex={2}
                     label="Status"
                     column="status"
                     sortKey={sortKey}
@@ -315,7 +331,7 @@ function PingMonitorFloatingPanel({
                     onSort={toggleSort}
                   />
                   <PingSortHeader
-                    columnIndex={3}
+                    columnIndex={2}
                     label="RTT"
                     column="latencyMs"
                     sortKey={sortKey}
@@ -327,23 +343,33 @@ function PingMonitorFloatingPanel({
               <tbody>
                 {displayedResults.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="p-4 text-center text-[var(--muted-foreground)]">
+                    <td colSpan={3} className="p-4 text-center text-[var(--muted-foreground)]">
                       No rows match this search.
                     </td>
                   </tr>
                 ) : (
-                  displayedResults.map((row) => (
+                  displayedResults.map((row) => {
+                    const statusLabel = formatPingStatusLabel(row);
+                    return (
                     <tr key={row.id} className="border-t border-[var(--border)]">
                       <td className={resizableTdClassName("p-2 font-mono")}>{row.ipAddress}</td>
-                      <td className={resizableTdClassName()}>{row.interfaceName}</td>
-                      <td className={resizableTdClassName(row.reachable ? "text-green-700" : "text-red-700")}>
-                        {row.checkedAt === null ? "…" : row.reachable ? "Up" : "Down"}
+                      <td
+                        className={resizableTdClassName(
+                          row.checkedAt === null
+                            ? "text-[var(--muted-foreground)]"
+                            : row.reachable
+                              ? "text-green-700"
+                              : "text-red-700"
+                        )}
+                      >
+                        {statusLabel}
                       </td>
                       <td className={resizableTdClassName("font-mono")}>
                         {row.latencyMs !== null ? `${row.latencyMs} ms` : "—"}
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </ResizableTableElement>
@@ -390,13 +416,39 @@ function comparePingRows(left: PingMonitorResult, right: PingMonitorResult, sort
   if (sortKey === "ipAddress") {
     return compareIpAddresses(left.ipAddress, right.ipAddress);
   }
-  if (sortKey === "interfaceName") {
-    return left.interfaceName.localeCompare(right.interfaceName, undefined, { sensitivity: "base" });
-  }
   if (sortKey === "status") {
     return compareStatus(left, right);
   }
   return compareLatency(left.latencyMs, right.latencyMs, left.reachable, right.reachable);
+}
+
+function formatPingStatusLabel(row: PingMonitorResult) {
+  if (row.checkedAt === null) {
+    return "Pending";
+  }
+  if (row.reachable) {
+    return "Up";
+  }
+  return simplifyPingFailure(row.error);
+}
+
+function simplifyPingFailure(error?: string) {
+  if (!error?.trim()) {
+    return "Down";
+  }
+
+  const normalized = error.trim().toLowerCase();
+  if (
+    normalized.includes("no reply") ||
+    normalized.includes("host unreachable") ||
+    normalized.includes("timed out") ||
+    normalized.includes("request timed out") ||
+    normalized.includes("100% packet loss")
+  ) {
+    return "Down";
+  }
+
+  return error.trim();
 }
 
 function compareStatus(left: PingMonitorResult, right: PingMonitorResult) {

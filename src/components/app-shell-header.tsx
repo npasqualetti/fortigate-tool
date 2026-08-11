@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/", label: "Dashboard" },
+  { href: "/assets", label: "Asset Identity" },
   { href: "/poe-reset", label: "POE Reset" },
   { href: "/firewalls", label: "Firewall Overview" },
   { href: "/admin", label: "Admin" }

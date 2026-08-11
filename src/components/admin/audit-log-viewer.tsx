@@ -22,6 +22,9 @@ import {
 import type { ResizableColumnDef } from "@/hooks/use-resizable-table-columns";
 import { useTablePagination } from "@/hooks/use-table-pagination";
 import { TablePagination } from "@/components/ui/table-pagination";
+import { LocalTimestamp } from "@/components/local-timestamp";
+import { formatStoredTimestamp, parseStoredTimestamp } from "@/lib/format-timestamp";
+import type { AuditEvent } from "@/lib/types";
 
 const AUDIT_TABLE_COLUMNS: ResizableColumnDef[] = [
   { id: "time", defaultWidth: 160, minWidth: 120 },
@@ -30,7 +33,6 @@ const AUDIT_TABLE_COLUMNS: ResizableColumnDef[] = [
   { id: "status", defaultWidth: 96, minWidth: 72 },
   { id: "details", defaultWidth: 320, minWidth: 160 }
 ];
-import type { AuditEvent } from "@/lib/types";
 
 export function AuditLogViewer({
   previewLogs,
@@ -87,9 +89,12 @@ function AuditLogModal({ logs }: { logs: AuditEvent[] }) {
     return {
       regexError: null,
       filteredLogs: logs.filter((event) => {
-        const createdAt = new Date(event.createdAt.replace(" ", "T")).getTime();
+        const parsedCreatedAt = parseStoredTimestamp(event.createdAt);
+        const createdAt = parsedCreatedAt?.getTime() ?? Number.NaN;
+        const formattedCreatedAt = formatStoredTimestamp(event.createdAt);
         const searchable = [
           event.createdAt,
+          formattedCreatedAt,
           event.username,
           event.action,
           event.status,
@@ -98,11 +103,11 @@ function AuditLogModal({ logs }: { logs: AuditEvent[] }) {
           event.details || ""
         ].join(" ");
 
-        if (from && createdAt < from) {
+        if (from && (!Number.isFinite(createdAt) || createdAt < from)) {
           return false;
         }
 
-        if (to && createdAt > to) {
+        if (to && (!Number.isFinite(createdAt) || createdAt > to)) {
           return false;
         }
 
@@ -180,7 +185,9 @@ function AuditTable({ logs }: { logs: AuditEvent[] }) {
         <tbody>
           {logs.map((event) => (
             <tr key={event.id} className="border-t border-[var(--border)]">
-              <td className={resizableTdClassName("p-2 whitespace-nowrap")}>{event.createdAt}</td>
+              <td className={resizableTdClassName("p-2 whitespace-nowrap")}>
+                <LocalTimestamp value={event.createdAt} />
+              </td>
               <td className={resizableTdClassName()}>{event.username}</td>
               <td className={resizableTdClassName()}>{event.action}</td>
               <td className={resizableTdClassName()}>

@@ -21,20 +21,28 @@ import {
 } from "@/lib/fortinet/poe-reset";
 import type { PoePortRow, PoeResetResult } from "@/lib/fortinet/poe-workspace";
 import {
+  buildSwitchAliasIndex,
+  buildSwitchMacIndex,
+  buildPortKey,
+  canonicalSwitchId,
   countMappedSwitchPortDevices,
   enrichLearnedDevicesWithSwitchPorts,
   extractManagedSwitchId,
   findManagedSwitchPort,
   formatSwitchInventoryDiagnostic,
+  mergePortRowsWithLearnedDevices,
   mergeSwitchPortRefs,
   parseManagedSwitchInventory,
   parseSwitchPortLiveStats,
   parseUserDeviceSwitchPorts,
   switchControllerEnabled,
+  type SwitchDeviceParseContext,
   type SwitchPortRef
 } from "@/lib/fortinet/switch-port-enrichment";
 import type { FortiManagerClient } from "@/lib/fortimanager/client";
 import { formatReadOnlyApiUserHelp, isFortiManagerPermissionError } from "@/lib/fortimanager/errors";
+import { isConclusiveFortinetPingResult, parseFortinetConfigScriptPingResponse, parseFortinetPingResponse } from "@/lib/fortinet/ping";
+import { buildFortinetPingAttempts, type FortinetPingAttemptBody } from "@/lib/fortinet/ping-attempts";
 import type { Firewall } from "@/lib/types";
 
 export type FortinetInterface = {
@@ -242,40 +250,82 @@ export class FortinetClient {
 
   async pingHost(host: string, options?: { count?: number; interfaceName?: string }): Promise<FortinetPingResult> {
     const count = options?.count ?? 4;
-    const bodies: Array<Record<string, unknown>> = [
-      { host, count },
-      { ping: host, count: String(count) },
-      { addr: host, count: String(count) },
-      { destination: host, count }
-    ];
+    const attempts = buildFortinetPingAttempts(host, count, {
+      interfaceName: options?.interfaceName,
+      vdom: this.firewall.vdom || "root"
+    });
 
-    if (options?.interfaceName) {
-      bodies.push(
-        { host, count, interface: options.interfaceName },
-        { ping: host, count: String(count), interface: options.interfaceName }
-      );
-    }
-
-    const paths = ["/api/v2/monitor/system/ping", "/api/v2/monitor/system/ping/check"];
     let lastError: Error | null = null;
+    let lastPayload: Record<string, unknown> | undefined;
 
-    for (const path of paths) {
-      for (const body of bodies) {
+    for (const attempt of attempts) {
+      for (const transport of ["proxy", "direct"] as const) {
+        if (transport === "direct" && !this.token) {
+          continue;
+        }
+
         try {
-          const raw = await this.request<Record<string, unknown>>(path, {
-            method: "POST",
-            body: JSON.stringify(body)
-          });
-          return {
-            host,
-            ...parseFortinetPingPayload(raw),
-            raw,
-            source: "fortigate"
-          };
+          const payload =
+            transport === "proxy"
+              ? await this.postMonitorAction(attempt.path, attempt.body)
+              : await this.apiFetchDirect(attempt.path, {
+                  method: "POST",
+                  body: JSON.stringify(attempt.body)
+                });
+
+          if (payload.status && payload.status !== "success") {
+            throw new Error(stringifyOptional(payload.message) || "Fortinet ping returned a non-success status.");
+          }
+
+          if (attempt.kind === "cli") {
+            const cliResult = parseFortinetConfigScriptPingResponse(payload);
+            lastPayload = payload;
+            if (cliResult.conclusive) {
+              return {
+                host,
+                ...cliResult.parsed,
+                raw: payload,
+                source: "fortigate"
+              };
+            }
+            continue;
+          }
+
+          const { raw, parsed } = parseFortinetPingResponse(payload);
+          lastPayload = payload;
+          if (isConclusiveFortinetPingResult(parsed, raw)) {
+            return {
+              host,
+              ...parsed,
+              raw: payload,
+              source: "fortigate"
+            };
+          }
         } catch (caught) {
           lastError = caught instanceof Error ? caught : new Error("Fortinet ping failed.");
         }
       }
+    }
+
+    if (lastPayload) {
+      const cliResult = parseFortinetConfigScriptPingResponse(lastPayload);
+      if (cliResult.conclusive) {
+        return {
+          host,
+          ...cliResult.parsed,
+          raw: lastPayload,
+          source: "fortigate"
+        };
+      }
+
+      const { parsed } = parseFortinetPingResponse(lastPayload);
+      return {
+        host,
+        ...parsed,
+        raw: lastPayload,
+        source: "fortigate",
+        error: parsed.reachable ? undefined : "FortiGate ping completed without a reachable response."
+      };
     }
 
     return {
@@ -457,6 +507,7 @@ export class FortinetClient {
     devices: FortinetLearnedDevice[];
     portRefs: SwitchPortRef[];
     diagnostics: FortinetLearnedDeviceDiagnostic[];
+    switchAliasIndex: Map<string, string>;
   }> {
     const path = "/api/v2/cmdb/switch-controller/managed-switch";
     const devices: FortinetLearnedDevice[] = [];
@@ -486,10 +537,16 @@ export class FortinetClient {
       }
 
       const cmdbRefs = parseManagedSwitchInventory(inventory);
+      const switchAliasIndex = buildSwitchAliasIndex(inventory);
+      const switchMacIndex = buildSwitchMacIndex(inventory);
+      const deviceContext: SwitchDeviceParseContext = { switchAliasIndex, switchMacIndex };
       const liveRefs = await this.collectLiveSwitchPortRefs();
-      const userDeviceResult = await this.collectUserDeviceSwitchPorts();
-      portRefs.push(...mergeSwitchPortRefs(cmdbRefs, liveRefs, userDeviceResult.portRefs));
-      devices.push(...userDeviceResult.devices);
+      const userDeviceResult = await this.collectUserDeviceSwitchPorts(deviceContext);
+      const detectedDeviceResult = await this.collectDetectedSwitchDevices(deviceContext);
+      portRefs.push(
+        ...mergeSwitchPortRefs(cmdbRefs, liveRefs, userDeviceResult.portRefs, detectedDeviceResult.portRefs)
+      );
+      devices.push(...userDeviceResult.devices, ...detectedDeviceResult.devices);
 
       const switchNames = [...new Set(portRefs.map((ref) => ref.switchId))];
       switchCount = switchNames.length;
@@ -538,10 +595,23 @@ export class FortinetClient {
             : undefined
       });
 
+      const detectedStats = formatSwitchInventoryDiagnostic(detectedDeviceResult.portRefs, switchCount, "user-device");
+      diagnostics.push({
+        path: "/api/v2/monitor/switch-controller/detected-device",
+        records: detectedStats.records,
+        devices: detectedStats.devices,
+        note:
+          detectedStats.records > 0
+            ? `Detected devices on switches: ${detectedStats.records} port mapping(s).`
+            : "No detected switch devices returned. Enable switch-controller network-monitoring on the FortiGate.",
+        error: detectedDeviceResult.portRefs.length === 0 ? "No detected switch devices returned." : undefined
+      });
+
       return {
         devices,
         portRefs: mergedPortRefs,
-        diagnostics
+        diagnostics,
+        switchAliasIndex
       };
     } catch (caught) {
       diagnostics.push({
@@ -554,29 +624,69 @@ export class FortinetClient {
       return {
         devices: [],
         portRefs: [],
-        diagnostics
+        diagnostics,
+        switchAliasIndex: new Map()
       };
     }
   }
 
-  private async collectUserDeviceSwitchPorts() {
-    const paths = ["/api/v2/monitor/user/device/query", "/api/v2/monitor/user/device"];
+  private async collectUserDeviceSwitchPorts(context: SwitchDeviceParseContext = {}) {
+    const paths = [
+      "/api/v2/monitor/user/device/query?with_dhcp=true",
+      "/api/v2/monitor/user/device/query",
+      "/api/v2/monitor/user/device",
+      "/api/v2/monitor/user/detected-device/select"
+    ];
+    const merged = { portRefs: [] as SwitchPortRef[], devices: [] as FortinetLearnedDevice[] };
+
     for (const queryPath of paths) {
       try {
         const payload = await this.request<unknown>(queryPath);
-        const parsed = parseUserDeviceSwitchPorts(payload);
+        const parsed = parseUserDeviceSwitchPorts(payload, context);
         if (parsed.portRefs.length > 0) {
-          return parsed;
+          merged.portRefs.push(...parsed.portRefs);
+          merged.devices.push(...parsed.devices);
         }
       } catch {
         continue;
       }
     }
-    return { portRefs: [], devices: [] };
+
+    return {
+      portRefs: mergeSwitchPortRefs(merged.portRefs),
+      devices: merged.devices
+    };
+  }
+
+  private async collectDetectedSwitchDevices(context: SwitchDeviceParseContext = {}) {
+    const paths = [
+      "/api/v2/monitor/switch-controller/detected-device/select",
+      "/api/v2/monitor/switch-controller/detected-device"
+    ];
+    const merged = { portRefs: [] as SwitchPortRef[], devices: [] as FortinetLearnedDevice[] };
+
+    for (const queryPath of paths) {
+      try {
+        const payload = await this.request<unknown>(queryPath);
+        const parsed = parseUserDeviceSwitchPorts(payload, context);
+        if (parsed.portRefs.length > 0) {
+          merged.portRefs.push(...parsed.portRefs);
+          merged.devices.push(...parsed.devices);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return {
+      portRefs: mergeSwitchPortRefs(merged.portRefs),
+      devices: merged.devices
+    };
   }
 
   private async collectLiveSwitchPortRefs(): Promise<SwitchPortRef[]> {
     const monitorPaths = [
+      "/api/v2/monitor/switch-controller/managed-switch/port-stats",
       "/api/v2/monitor/switch-controller/managed-switch?port_stats=true",
       "/api/v2/monitor/switch-controller/managed-switch/status",
       "/api/v2/monitor/switch-controller/managed-switch",
@@ -619,40 +729,28 @@ export class FortinetClient {
   async listPoePorts(): Promise<PoePortRow[]> {
     const managed = await this.collectManagedSwitchPortDevices();
     const learned = await this.learnedDeviceSources();
-    const enriched = enrichLearnedDevicesWithSwitchPorts(learned.devices, managed.portRefs);
-
-    const learnedByPortKey = new Map<string, { macAddress?: string; ipAddress?: string }>();
-    for (const device of enriched) {
-      if (!device.interfaceName.includes("/")) {
-        continue;
-      }
-      learnedByPortKey.set(device.interfaceName, {
-        macAddress: device.macAddress,
-        ipAddress: device.ipAddress !== "unknown" ? device.ipAddress : undefined
-      });
-    }
+    const learnedDevices = [...learned.devices, ...managed.devices];
 
     const rows: PoePortRow[] = [];
     const seen = new Set<string>();
     for (const ref of managed.portRefs) {
-      const portKey = `${ref.switchId}/${ref.portName}`;
+      const portKey = buildPortKey(ref.switchId, ref.portName, managed.switchAliasIndex);
       if (seen.has(portKey)) {
         continue;
       }
       seen.add(portKey);
-      const learnedInfo = learnedByPortKey.get(portKey);
       rows.push({
-        switchId: ref.switchId,
+        switchId: canonicalSwitchId(ref.switchId, managed.switchAliasIndex),
         portName: ref.portName,
         portKey,
-        macAddress: learnedInfo?.macAddress || ref.macAddress,
-        ipAddress: learnedInfo?.ipAddress || ref.ipAddress,
+        macAddress: ref.macAddress,
+        ipAddress: ref.ipAddress,
         oui: undefined,
         ouiApproved: false
       });
     }
 
-    return rows.sort((left, right) =>
+    return mergePortRowsWithLearnedDevices(rows, learnedDevices, managed.switchAliasIndex).sort((left, right) =>
       `${left.switchId}/${left.portName}`.localeCompare(`${right.switchId}/${right.portName}`, undefined, {
         numeric: true
       })
@@ -707,27 +805,85 @@ export class FortinetClient {
     throw new Error(formatPoeResetFailure(target, lastError));
   }
 
-  private async postMonitorAction(path: string, body: Record<string, unknown>) {
+  private async postMonitorAction(path: string, body: FortinetPingAttemptBody) {
+    const serializedBody = JSON.stringify(body);
     if (this.fmgClient && this.firewall.fmgDeviceName) {
-      const payload = await this.fmgClient.proxyFortiGateRequestOnce(
-        this.firewall.fmgDeviceName,
-        path,
-        {
-          method: "POST",
-          body: JSON.stringify(body)
-        },
-        {
-          vdom: this.firewall.vdom || "root",
-          adom: this.firewall.adom
+      try {
+        return await this.fmgClient.proxyFortiGateRequestOnce(
+          this.firewall.fmgDeviceName,
+          path,
+          {
+            method: "POST",
+            body: serializedBody
+          },
+          {
+            vdom: this.firewall.vdom || "root",
+            adom: this.firewall.adom
+          }
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : "";
+        if (this.token && (isFortiManagerPermissionError(error) || message.includes("invalid url"))) {
+          return this.apiFetchDirect(path, {
+            method: "POST",
+            body: serializedBody
+          });
         }
-      );
-      return payload;
+        throw error;
+      }
     }
 
-    return this.apiFetch(path, {
+    return this.apiFetchDirect(path, {
       method: "POST",
-      body: JSON.stringify(body)
+      body: serializedBody
     });
+  }
+
+  private async apiFetchDirect(path: string, init?: RequestInit) {
+    if (!this.token) {
+      throw new Error("This firewall does not have an API token configured.");
+    }
+
+    const timeoutMs = Number(process.env.FORTINET_API_TIMEOUT_MS || 5000);
+    const authModes = getFortinetAuthModesToTry();
+    let lastBody = "";
+    const modesTried: Array<Exclude<FortinetApiAuthMode, "auto">> = [];
+
+    for (const authMode of authModes) {
+      modesTried.push(authMode);
+      const response = await fortinetFetch(
+        buildFortinetRequestUrl(this.baseUrl, path, this.token, authMode),
+        {
+          ...init,
+          headers: buildFortinetRequestHeaders(this.token, init?.headers, authMode),
+          signal: AbortSignal.timeout(timeoutMs),
+          cache: "no-store"
+        },
+        this.firewall.verifyTls
+      );
+
+      const rawBody = await response.text();
+      if (response.status === 401 && authMode !== authModes[authModes.length - 1]) {
+        lastBody = rawBody;
+        continue;
+      }
+
+      if (!response.ok) {
+        throw new Error(formatFortinetHttpError(response.status, response.statusText, rawBody, modesTried));
+      }
+
+      if (!rawBody.trim()) {
+        return {};
+      }
+
+      try {
+        return JSON.parse(rawBody) as Record<string, unknown>;
+      } catch {
+        throw new Error("Fortinet API returned non-JSON data.");
+      }
+    }
+
+    throw new Error(formatFortinet401Help(modesTried) + (lastBody ? ` Last response: ${lastBody.slice(0, 240)}` : ""));
   }
 
   private async resolveManagedSwitchTarget(target: FortinetPoeTarget) {
@@ -793,8 +949,13 @@ export class FortinetClient {
       } catch (error) {
         const isWrite =
           init?.method && ["POST", "PUT", "DELETE", "PATCH"].includes(init.method.toUpperCase());
-        if (isWrite && isFortiManagerPermissionError(error) && this.token) {
-          // Fall through to direct FortiGate API when FMGR blocks write proxy but a token exists.
+        const message = error instanceof Error ? error.message.toLowerCase() : "";
+        const retryDirect =
+          isWrite &&
+          this.token &&
+          (isFortiManagerPermissionError(error) || message.includes("invalid url"));
+        if (retryDirect) {
+          // Fall through to direct FortiGate API when FMGR blocks or rejects the proxy call.
         } else {
           throw error;
         }
@@ -1260,33 +1421,6 @@ function flattenRouteRecords(payload: unknown): Array<Record<string, unknown>> {
   }
 
   return Object.values(record).flatMap((value) => flattenRouteRecords(value));
-}
-
-function parseFortinetPingPayload(raw: Record<string, unknown>): Omit<FortinetPingResult, "host" | "source" | "raw"> {
-  const reachable =
-    toBoolean(raw.reachable) ??
-    toBoolean(raw.success) ??
-    (typeof raw.packet_loss === "number" ? raw.packet_loss < 100 : undefined) ??
-    (typeof raw.loss === "number" ? raw.loss < 100 : undefined) ??
-    (typeof raw.received === "number" && raw.received > 0) ??
-    (typeof raw.packets_received === "number" && raw.packets_received > 0);
-
-  const avgRttMs =
-    toNumber(raw.avg_rtt) ??
-    toNumber(raw.avg_rtt_ms) ??
-    toNumber(raw.rtt_avg) ??
-    toNumber(raw.latency) ??
-    toNumber(raw.time);
-
-  return {
-    reachable: reachable ?? Boolean(avgRttMs !== undefined),
-    packetsSent: toNumber(raw.sent) ?? toNumber(raw.packets_sent),
-    packetsReceived: toNumber(raw.received) ?? toNumber(raw.packets_received),
-    packetLossPercent: toNumber(raw.packet_loss) ?? toNumber(raw.loss),
-    minRttMs: toNumber(raw.min_rtt) ?? toNumber(raw.min_rtt_ms),
-    maxRttMs: toNumber(raw.max_rtt) ?? toNumber(raw.max_rtt_ms),
-    avgRttMs: avgRttMs ?? undefined
-  };
 }
 
 function parseFortinetCableTestPayload(interfaceName: string, raw: Record<string, unknown>): FortinetCableTestResult {

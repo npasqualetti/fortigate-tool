@@ -82,25 +82,36 @@ export function ResizableTh({
   className?: string;
   children: ReactNode;
 }) {
-  const { widths, columnCount, onResizeStart } = useResizableTableContext();
-  const isLastColumn = columnIndex >= columnCount - 1;
+  const { widths, onResizeStart, onAutoFitColumn } = useResizableTableContext();
 
   return (
-    <th className={cn("relative", className)} style={{ width: widths[columnIndex] }}>
-      <div className="whitespace-nowrap pr-3">{children}</div>
-      {!isLastColumn ? (
-        <span
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize column"
-          className="absolute right-0 top-0 z-20 h-full w-1.5 translate-x-1/2 cursor-col-resize touch-none bg-transparent hover:bg-[var(--primary)]/30 active:bg-[var(--primary)]/50"
-          onMouseDown={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onResizeStart(columnIndex, event.clientX);
-          }}
-        />
-      ) : null}
+    <th
+      className={cn(
+        "group/th relative border-r border-slate-300 bg-inherit last:border-r-0",
+        className
+      )}
+      style={{ width: widths[columnIndex] }}
+    >
+      <div className="whitespace-nowrap pr-4">{children}</div>
+      <span
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize column. Double-click to fit content."
+        title="Drag to resize. Double-click to fit content."
+        className="absolute right-0 top-0 z-20 flex h-full w-3 translate-x-1/2 cursor-col-resize touch-none items-stretch justify-center"
+        onMouseDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onResizeStart(columnIndex, event.clientX);
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onAutoFitColumn(columnIndex);
+        }}
+      >
+        <span className="my-1 w-0.5 rounded-full bg-slate-400/90 transition-colors group-hover/th:bg-slate-500 hover:bg-[var(--primary)]" />
+      </span>
     </th>
   );
 }

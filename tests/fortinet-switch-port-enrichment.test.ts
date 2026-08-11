@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildSwitchAliasIndex,
+  buildSwitchMacIndex,
+  correlatePortsWithLearnedDevices,
   enrichLearnedDevicesWithSwitchPorts,
   findManagedSwitchPort,
+  matchPortKeys,
   parseManagedSwitchInventory,
   parseUserDeviceSwitchPorts
 } from "../src/lib/fortinet/switch-port-enrichment.ts";
@@ -83,9 +87,84 @@ test("findManagedSwitchPort resolves controller switch id and port name", () => 
   };
 
   assert.deepEqual(findManagedSwitchPort(inventory, "S108FFTV21013920", "port8"), {
-    switchId: "FSW-A",
+    switchId: "S108FFTV21013920",
     port: "port8"
   });
+});
+
+test("correlatePortsWithLearnedDevices joins ARP rows when switch name and serial differ", () => {
+  const inventory = {
+    results: [
+      {
+        name: "FSW-A",
+        serial: "S108FFTV21013920",
+        ports: [{ name: "port8" }]
+      }
+    ]
+  };
+  const aliases = buildSwitchAliasIndex(inventory);
+  const portRefs = parseManagedSwitchInventory(inventory);
+  const portInfo = correlatePortsWithLearnedDevices(
+    portRefs,
+    [
+      {
+        interfaceName: "vlan100",
+        ipAddress: "10.1.1.50",
+        macAddress: "AA:BB:CC:DD:EE:FF"
+      }
+    ],
+    aliases
+  );
+
+  assert.equal(portInfo.get("S108FFTV21013920/port8")?.macAddress, undefined);
+
+  const portInfoWithLiveMac = correlatePortsWithLearnedDevices(
+    [{ switchId: "FSW-A", portName: "port8", macAddress: "AA:BB:CC:DD:EE:FF" }],
+    [
+      {
+        interfaceName: "vlan100",
+        ipAddress: "10.1.1.50",
+        macAddress: "AA:BB:CC:DD:EE:FF"
+      }
+    ],
+    aliases
+  );
+
+  assert.equal(portInfoWithLiveMac.get("S108FFTV21013920/port8")?.macAddress, "AA:BB:CC:DD:EE:FF");
+  assert.equal(portInfoWithLiveMac.get("S108FFTV21013920/port8")?.ipAddress, "10.1.1.50");
+});
+
+test("parseUserDeviceSwitchPorts maps detected_interface via master switch MAC", () => {
+  const inventory = {
+    results: [{ name: "FSW-A", serial: "S108FFTV21013920", mac: "11:22:33:44:55:66" }]
+  };
+  const parsed = parseUserDeviceSwitchPorts(
+    {
+      results: [
+        {
+          mac: "aa:bb:cc:dd:ee:ff",
+          ipv4_address: "10.1.1.50",
+          hostname: "phone-1",
+          detected_interface: "port8",
+          master_mac: "11:22:33:44:55:66"
+        }
+      ]
+    },
+    {
+      switchMacIndex: buildSwitchMacIndex(inventory),
+      switchAliasIndex: buildSwitchAliasIndex(inventory)
+    }
+  );
+
+  assert.equal(parsed.devices[0]?.interfaceName, "S108FFTV21013920/port8");
+  assert.equal(parsed.devices[0]?.ipAddress, "10.1.1.50");
+});
+
+test("matchPortKeys treats port name variants as equal", () => {
+  const aliases = buildSwitchAliasIndex({
+    results: [{ name: "FSW-A", serial: "S108FFTV21013920" }]
+  });
+  assert.equal(matchPortKeys("FSW-A/Port8", "S108FFTV21013920/port8", aliases), true);
 });
 
 test("parseUserDeviceSwitchPorts maps Device Inventory rows to switch/port", () => {
