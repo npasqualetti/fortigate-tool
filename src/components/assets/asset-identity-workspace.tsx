@@ -93,9 +93,14 @@ export function AssetIdentityWorkspace({
   const pageSize = 25;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
+  const visibleColumnKey = useMemo(
+    () => ASSET_COLUMN_IDS.filter((columnId) => visible[columnId] !== false).join("|"),
+    [visible]
+  );
+
   const tableColumns = useMemo(
-    () => ASSET_COLUMNS.filter((column) => visibleColumnIds.includes(column.id)),
-    [visibleColumnIds]
+    () => ASSET_COLUMNS.filter((column) => visible[column.id] !== false),
+    [visibleColumnKey]
   );
 
   const columnIndex = useCallback(

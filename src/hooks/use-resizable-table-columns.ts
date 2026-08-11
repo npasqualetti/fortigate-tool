@@ -25,6 +25,10 @@ function legacyStorageKey(tableId: string) {
   return `table-columns:v2:${tableId}`;
 }
 
+function buildColumnKey(columns: ResizableColumnDef[]) {
+  return columns.map((column) => `${column.id}:${column.defaultWidth}:${column.minWidth ?? ""}`).join("|");
+}
+
 function widthsFromColumnMap(
   columns: ResizableColumnDef[],
   minWidths: number[],
@@ -126,43 +130,54 @@ export function useResizableTableColumns(
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
 
-  const columnKey = columns.map((column) => `${column.id}:${column.defaultWidth}:${column.minWidth ?? ""}`).join("|");
+  const columnKey = buildColumnKey(columns);
 
   const [widths, setWidths] = useState(() => columns.map((column) => column.defaultWidth));
   const widthsRef = useRef(widths);
   const resizeRef = useRef<ResizeState | null>(null);
-  const fittedRef = useRef(false);
+  const loadedForKeyRef = useRef("");
+  const pendingFitRef = useRef(false);
 
   useEffect(() => {
     widthsRef.current = widths;
   }, [widths]);
 
   useEffect(() => {
+    const loadKey = `${tableId}::${columnKey}`;
+    if (loadedForKeyRef.current === loadKey) {
+      return;
+    }
+    loadedForKeyRef.current = loadKey;
+
     const currentColumns = columnsRef.current;
     const currentMinWidths = minWidthsFor(currentColumns);
     const loaded = loadStoredWidths(tableId, currentColumns, currentMinWidths);
     setWidths((current) => (widthsEqual(current, loaded.widths) ? current : loaded.widths));
-    fittedRef.current = !loaded.fromStorage;
+    pendingFitRef.current = !loaded.fromStorage;
   }, [tableId, columnKey]);
 
   useLayoutEffect(() => {
-    if (!fittedRef.current || !containerRef?.current) {
+    if (!pendingFitRef.current) {
       return;
     }
 
-    const availableWidth = containerRef.current.clientWidth;
+    const container = containerRef?.current;
+    if (!container) {
+      return;
+    }
+
+    const availableWidth = container.clientWidth;
     if (availableWidth <= 0) {
       return;
     }
 
-    fittedRef.current = false;
+    pendingFitRef.current = false;
     const currentMinWidths = minWidthsFor(columnsRef.current);
     setWidths((current) => {
       const next = scaleWidthsToFit(current, currentMinWidths, availableWidth);
       return widthsEqual(current, next) ? current : next;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fit once per table/column definition
-  }, [tableId, columnKey, containerRef]);
+  });
 
   const persistWidths = useCallback(
     (nextWidths: number[]) => {

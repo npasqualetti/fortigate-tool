@@ -18,7 +18,11 @@ function writeCookie(name: string, value: string) {
 }
 
 export function useColumnVisibilityCookie(cookieName: string, columnIds: string[]) {
-  const defaults = useMemo(() => Object.fromEntries(columnIds.map((id) => [id, true])), [columnIds]);
+  const columnIdsKey = useMemo(() => columnIds.join("|"), [columnIds]);
+  const defaults = useMemo(
+    () => Object.fromEntries(columnIds.map((id) => [id, true])),
+    [columnIdsKey, columnIds]
+  );
 
   const [visible, setVisible] = useState<Record<string, boolean>>(defaults);
 
@@ -29,7 +33,14 @@ export function useColumnVisibilityCookie(cookieName: string, columnIds: string[
     }
     try {
       const parsed = JSON.parse(raw) as Record<string, boolean>;
-      setVisible({ ...defaults, ...parsed });
+      const next = { ...defaults, ...parsed };
+      setVisible((current) => {
+        const keys = Object.keys(defaults);
+        if (keys.every((key) => current[key] === next[key])) {
+          return current;
+        }
+        return next;
+      });
     } catch {
       // Ignore invalid cookie payloads.
     }
@@ -46,9 +57,14 @@ export function useColumnVisibilityCookie(cookieName: string, columnIds: string[
     [cookieName]
   );
 
+  const visibleColumnKey = useMemo(
+    () => columnIds.filter((columnId) => visible[columnId] !== false).join("|"),
+    [columnIds, visible]
+  );
+
   const visibleColumnIds = useMemo(
     () => columnIds.filter((columnId) => visible[columnId] !== false),
-    [columnIds, visible]
+    [columnIds, visibleColumnKey]
   );
 
   return {
