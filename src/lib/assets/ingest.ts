@@ -123,7 +123,7 @@ export function mapPoePortsToAssetRows(ports: PoePortInput[]): AssetIdentityUpse
   return mergeAssetIdentityRows(rows);
 }
 
-export function mergeAssetIdentityRows(...groups: AssetIdentityUpsertRow[]) {
+export function mergeAssetIdentityRows(...groups: AssetIdentityUpsertRow[][]) {
   const merged = new Map<string, AssetIdentityUpsertRow>();
 
   for (const row of groups.flat()) {
